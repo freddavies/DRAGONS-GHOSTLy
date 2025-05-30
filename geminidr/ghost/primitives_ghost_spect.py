@@ -49,6 +49,8 @@ from .lookups import polyfit_lookup, line_list
 
 from recipe_system.utils.decorators import parameter_override, capture_provenance
 from recipe_system.utils.md5 import md5sum
+
+from IPython import embed
 # ------------------------------------------------------------------------------
 
 GEMINI_SOUTH_LOC = astrocoord.EarthLocation.from_geodetic(
@@ -1403,6 +1405,16 @@ class GHOSTSpect(GHOST):
                     else:
                         log.stdinfo(f"Estimated seeing in the {k} arm: {fwhm:5.3f}"
                                     f" ({apfrac*100:.1f}% aperture throughput)")
+                        if seeing is not None:
+                            log.stdinfo(f"Creating synthetic slit image for seeing={seeing}")
+                            ifus = []
+                            if ifu1 == 'object':
+                                ifus.append('ifu0' if res_mode == 'std' else 'ifu')
+                            # "ifu2" is the ThXe cal fiber in HR and has no continuum
+                            if ifu2 == 'object' and res_mode == 'std':
+                                ifus.append('ifu1')
+                            slit_data = sview.fake_slitimage(
+                                        flat_image=slitflat_data, ifus=ifus, seeing=seeing)
 
             if slitflat is None:
                 log.stdinfo("Creating synthetic slitflat image")

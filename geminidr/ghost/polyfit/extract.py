@@ -10,13 +10,15 @@ from astropy.modeling import models, fitting
 from astropy.stats import sigma_clip
 import matplotlib.cm as cm
 import warnings
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import CubicSpline, splrep, splev
 from datetime import datetime
 
 from gempy.library import astrotools, matching
 from gempy.utils import logutils
 from geminidr.gemini.lookups import DQ_definitions as DQ
 from .extractum import Extractum
+
+from IPython import embed
 
 
 log = logutils.get_logger(__name__)
@@ -443,6 +445,9 @@ class Extractor(object):
                     xmin, xmax = x_ix.min(), limits[1]
                 else:
                     xmin, xmax = limits[0], x_ix.max()
+                    
+            #xmax += 2
+            #xmin -= 2
 
             # xmin can be <0, xmax can be >= nx
             nrows = xmax - xmin + 1
@@ -451,6 +456,8 @@ class Extractor(object):
             all_phi = []
             if debug_pixel != (None, None):
                 print(f"ROW LIMITS: {xmin} {xmax}")
+                
+            pixel_array_x = np.zeros_like(pixel_array)
 
             # Code is written in this way to minimize the number of calls to
             # np.interp -- calling for each pixel is very slow
@@ -461,9 +468,13 @@ class Extractor(object):
                     profiles, profile_y_microns, slit_center,
                     detpix_microns=matrices[i, j, 0, 0])
 
+                #x_ix = np.append(x_ix,x_ix[-1]+1)
+
                 # Deal with edge effects...
                 on_array = np.logical_and(x_ix >=0, x_ix < nx)
                 phi /= phi.sum(axis=1)[:, np.newaxis]
+                
+                
 
                 # Calculate extraction location for each spatial pixel by
                 # including contributions from non-collinear slit and slit tilt
@@ -475,12 +486,14 @@ class Extractor(object):
                     assert np.array_equal(x_ix, ix)
                     y_ix += xvpos / matrices[i, j, 1, 1] + ytilt
                 pixel_array[j, x_ix.min()-xmin:x_ix.max()-xmin+1] = y_ix
+                pixel_array_x[j,x_ix.min()-xmin:x_ix.max()-xmin+1] = (x_ix-slit_center)*matrices[i,j,0,0]
                 if debug_this_pixel:
                     y_locations = y_ix
                     print("\nY LOCATIONS",
                           [(xx, yy) for xx, yy in zip(x_ix, y_locations)])
                 mask_array[j, x_ix.min()-xmin:x_ix.max()-xmin+1] |= ((~on_array) * DQ.no_data)
                 all_phi.append((x_ix.min()-xmin, phi))
+                
 
             if debug_pixel[0] == self.arm.m_min+i:
                 yy = debug_pixel[1]
@@ -491,6 +504,9 @@ class Extractor(object):
                 if correction is not None:
                     log.debug("Correction factors (multiplicative)")
                     log.debug(correction[i, yy-1:yy+2])
+                    
+            # Save the original pixel array?
+            pixel_array_y = np.copy(pixel_array)
 
             # Do the interpolation for all wavelengths in this order
             # Save memory by overwriting the array of pixel locations with values
@@ -502,16 +518,57 @@ class Extractor(object):
                         pixel_array[:, ix-xmin], np.arange(ny),
                         (self.badpixmask[ix] & bit).astype(float)) > 0) * bit
                 if correction is None:
-                    pixel_array[:, ix-xmin] = np.interp(
-                        pixel_array[:, ix-xmin], np.arange(ny), data[ix])
+                    #pixel_array[:, ix-xmin] = np.interp(
+                    #    pixel_array[:, ix-xmin], np.arange(ny), data[ix])
+                    pixel_array[:,ix-xmin] = data[ix]
                 else:
-                    pixel_array[:, ix-xmin] = np.interp(
-                        pixel_array[:, ix-xmin],
-                        np.arange(ny), data[ix] * correction[i])
+                    #pixel_array[:, ix-xmin] = np.interp(
+                    #    pixel_array[:, ix-xmin],
+                    #    np.arange(ny), data[ix] * correction[i])
+                    pixel_array[:,ix-xmin] = data[ix] * correction[i]
+            
 
             if debug_pixel[0] == self.arm.m_min+i:
                 for ix, y in enumerate(y_locations):
                     log.debug(ix+x1+xmin, y,  pixel_array[yy, ix+x1], mask_array[yy, ix+x1])
+                    
+            # FBD: Create a better model for phi
+            # Let's start by computing a rudimentary sky subtraction and profile normalization
+            pixel_array_norm = np.zeros_like(pixel_array)
+            obj = np.zeros_like(pixel_array_norm)
+            for j in range(ny):
+                slit_center = x_map[i, j] + nx // 2
+                x_ix, phi, profiles = resample_slit_profiles_to_detector(
+                    profiles, profile_y_microns, slit_center,
+                    detpix_microns=matrices[i, j, 0, 0])
+                mask = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0) & (mask_array == 0)
+                xval = pixel_array_x[mask]
+                len_phi = phi[1].shape
+                phix = np.interp(xval,(x_ix-slit_center)*matrices[i,j,0,0],phi[1])
+                if np.sum(xval < 0) > 0:
+                    sky_level = np.median(pixel_array[mask & (pixel_array_x < 0)]/phix[xval<0])
+                    sky = sky_level*phix
+                else:
+                    sky = sky_level*phix
+                pixel_array_norm[mask] = pixel_array[mask]-sky
+                # Now normalize by the object pixels
+                obj[j,:] = np.sum(pixel_array_norm[mask & (pixel_array_x > 0)])
+                pixel_array_norm[mask] /= np.sum(pixel_array_norm[mask & (pixel_array_x > 0)])
+
+            mask = pixel_array_x != 0
+            bins = np.linspace(pixel_array_x[mask].min(),pixel_array_x[mask].max(),101)
+            cens = (bins[1:]+bins[:-1])/2
+            prof = np.zeros_like(cens)
+            for ii in range(len(bins)-1):
+                mask2 = (pixel_array_x > bins[ii]) & (pixel_array_x < bins[ii+1]) & (obj > np.percentile(obj,50.0)) & (~np.isnan(pixel_array_norm))
+                prof[ii] = np.median(pixel_array_norm[mask&mask2])
+            #prof /= np.sum(prof)#*(cens[1]-cens[0])
+            
+            knots = np.append(np.linspace(pixel_array_x.min()+40,-40,6),np.linspace(0,pixel_array_x.max()-40,40))
+            tck = splrep(cens,prof, t=knots, k=1)
+
+            if i == 10:
+                embed()
 
             for j, (x_ix_min, phi) in enumerate(all_phi):  # range(ny)
                 debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
@@ -528,13 +585,54 @@ class Extractor(object):
                     # already been multiplied by a factor 20 lines above.
                     noise_model = lambda x: c0 + c1 * abs(x) / correction[i, j]
 
-                _slice = (j, slice(x_ix_min, x_ix_min+phi.shape[1]))
-                xtr = Extractum(phi, pixel_array[_slice],
-                                mask=mask_array[_slice].astype(bool),
+#                if i == 10:
+#                    debug_this_pixel = True
+                
+                #                phi[0] = splev(pixel_array_x[_slice],tck)
+                #                phi[0][pixel_array_x[_slice]<0] = 0.0
+                #                phi[0] /= np.sum(phi[0])
+
+
+                # FBD This way of doing things always grabs "vertical" slices of pixels,
+                # which causes problems when you are inside a sky line.
+#                _slice = (j, slice(x_ix_min, x_ix_min+phi.shape[1]))
+#                xtr = Extractum(phi, pixel_array[_slice],
+#                                mask=mask_array[_slice].astype(bool),
+#                                noise_model=noise_model,
+#                                pixel=(self.arm.m_min+i, j))
+#                                
+                # FBD Let's do something different instead.
+                # How about we grab all of the pixels corresponding to one wavelength bin,
+                # and then evaluate the profile shape at every location.
+                # We *also* need to evaluate the sky profile shape, too.
+                # This might be a bit more of a challenge, but we can try to
+                # stick to the usual one for now.
+                slit_center = x_map[i, j] + nx // 2
+                x_ix, phi, _ = resample_slit_profiles_to_detector(
+                    profiles, profile_y_microns, slit_center,
+                    detpix_microns=matrices[i, j, 0, 0])
+                phi /= phi.sum(axis=1)[:, np.newaxis]
+                use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x > -1600) & (pixel_array_x < 1870)
+                xval = pixel_array_x[use_mask]
+                phi_sky = np.interp(xval,(x_ix-slit_center)*matrices[i,j,0,0],phi[1])
+                phi_obj = splev(xval,tck)
+                phi_obj[xval < 0] = 0.0 # these pixels should be sky
+                #phi_sky /= np.sum(phi_sky) # probably don't need these?
+                #phi_obj /= np.sum(phi_obj) # best to avoid futzing with this, I think
+                
+                sort = np.argsort(xval)
+                phi = np.array([phi_obj[sort],phi_sky[sort]])
+                
+                xtr = Extractum(phi, pixel_array[use_mask][sort],
+                                mask=mask_array[use_mask][sort].astype(bool),
                                 noise_model=noise_model,
                                 pixel=(self.arm.m_min+i, j))
-                model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                                     c1=c1, ftol=ftol)
+                                
+                try:
+                    model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                         c1=c1, ftol=ftol)
+                except:
+                    embed()
 
                 phi_scaled = phi * model_amps[:, np.newaxis]
                 sum_models = phi_scaled.sum(axis=0)
@@ -547,10 +645,18 @@ class Extractor(object):
                 # formula for VAR(f)/f in Table 1 of Horne (1986)
                 if optimal:
                     extracted_flux[i, j] = model_amps
-                    extracted_var[i, j] = abs(
-                        extracted_flux[i, j] * astrotools.divide0(
-                            phi[:, ~xtr.mask].sum(axis=1),
-                            (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                    #extracted_var[i, j] = abs(
+                    #    extracted_flux[i, j] * astrotools.divide0(
+                    #        phi[:, ~xtr.mask].sum(axis=1),
+                    #        (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                    # New method: just use var(f) and forget the sky variance. Doesn't work on arc/flats.
+                    try:
+                        extracted_var[i,j] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var)),0])
+                    except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
+                        extracted_var[i, j] = abs(
+                            extracted_flux[i, j] * astrotools.divide0(
+                                phi[:, ~xtr.mask].sum(axis=1),
+                                (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
                 else:
                     # Correction for flagged pixels
                     object_scaling = astrotools.divide0(phi.sum(axis=1),
@@ -559,7 +665,7 @@ class Extractor(object):
                     extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
 
                 bad_frac = phi[:, ~xtr.mask].sum(axis=1) < min_flux_frac
-                mask_per_object = np.bitwise_or.reduce(mask_array[_slice] &
+                mask_per_object = np.bitwise_or.reduce(mask_array[use_mask] &
                                                        ((phi > 0) * DQ.max), axis=1)
                 extracted_mask[i, j, bad_frac] = mask_per_object[bad_frac]
 
