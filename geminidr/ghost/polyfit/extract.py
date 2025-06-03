@@ -809,13 +809,13 @@ class Extractor(object):
                     xval = pixel_array_x[use_mask]
                     sort = np.argsort(xval)
                     if method == "new":
-                        phi_sky = flat_profile([[i,j,xval[sort][k]] for k in range(len(xval[sort]))]) #np.interp(xval,cens_flat,prof_flat,left=0,right=0)
-                        phi_obj = obj_profile(j,xval[sort])[0]#np.interp(xval[sort],cens,prof,left=0,right=0)
+                        phi_sky = flat_profile([[i,j,xval[sort][k]] for k in range(len(xval[sort]))])
+                        phi_obj = obj_profile(j,xval[sort])[0]
                         phi_obj[xval[sort] < 0] = 0.0 # these pixels should be sky
                         
                         phi = np.array([phi_obj,phi_sky])
                     else:
-                        phi_all = flat_profile(j,xval[sort])[0]#np.interp(xval,cens_flat,prof_flat,left=0,right=0)
+                        phi_all = flat_profile([[i,j,xval[sort][k]] for k in range(len(xval[sort]))])
                         phi = np.array([phi_all])
                 
                     xtr = Extractum(phi, pixel_array[use_mask][sort],

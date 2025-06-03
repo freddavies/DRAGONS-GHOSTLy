@@ -50,6 +50,7 @@ from .lookups import polyfit_lookup, line_list
 from recipe_system.utils.decorators import parameter_override, capture_provenance
 from recipe_system.utils.md5 import md5sum
 
+import lacosmic
 from IPython import embed
 # ------------------------------------------------------------------------------
 
@@ -1936,6 +1937,12 @@ class GHOSTSpect(GHOST):
             #        #    unilluminated[-iy-768//ybin:, ix] = False
 
             ny, nx = ad[0].shape
+            
+            # Mask cosmic rays
+            # ONLY RUN ON SCIENCE FRAMES, NOT FLAT/ARC
+            if 'FLAT' not in ad.tags:
+                lacos = lacosmic.lacosmic(ad[0].data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
+                ad[0].mask = ad[0].mask + lacos[1]
 
             interp_points = []
             xs = xsampling // xbin
