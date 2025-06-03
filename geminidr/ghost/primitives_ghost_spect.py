@@ -1338,6 +1338,7 @@ class GHOSTSpect(GHOST):
                 use_sky = [True, False]
                 find_crs = [False, False]
                 sky_correct_profiles = False
+                extract_method = "arc"
             else:
                 ifu_selection = [obj for obj, ifu in enumerate([ifu1, ifu2])
                                  if ifu == "object"]
@@ -1345,6 +1346,10 @@ class GHOSTSpect(GHOST):
                 use_sky = [params["sky_subtract"] if ifu_selection else True]
                 find_crs = [True]
                 sky_correct_profiles = True
+                extract_method = "new"
+                
+            if 'FLAT' in ad.tags:
+                extract_method = "flat"
 
             # CJS: Heavy refactor. Return the filename for each calibration
             # type. Eliminates requirement that everything be updated
@@ -1438,7 +1443,7 @@ class GHOSTSpect(GHOST):
                     # avoids a divide-by-zero warning
                     binned_blaze[binned_blaze < 0.0001] = np.inf
                     correction = 1. / binned_blaze
-
+                    
             for i, (o, s, cr) in enumerate(zip(objs_to_use, use_sky, find_crs)):
                 if o:
                     log.stdinfo(f"\nExtracting objects {str(o)}; sky subtraction {str(s)}")
@@ -1455,7 +1460,8 @@ class GHOSTSpect(GHOST):
                     debug_pixel=debug_pixel,
                     correction=correction, optimal=optimal_extraction,
                     apply_centroids=apply_centroids, ftol=ftol,
-                    min_flux_frac=min_flux_frac, timing=timing
+                    min_flux_frac=min_flux_frac, timing=timing,
+                    flat=flat, method = extract_method
                 )
 
                 # Flag pixels with VAR=0 that don't already have a flag
