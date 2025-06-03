@@ -560,6 +560,7 @@ class Extractor(object):
             flat_profile = RegularGridInterpolator((np.arange(nord),ycen,cens),profs,
                                                    method='linear',bounds_error=False,fill_value=0.0)
                 
+        if method == "new": # don't need to do this for arc/flat
             good_orders = [5,6,7,8,9,10,11] # This ranges from ~9000A to zlya~5.4,
                             # orders which should have a lot of flux in GHOSTLy
             print("\n    Determining object profile from good order indices "+str(good_orders[0])+" to "+str(good_orders[-1]))
