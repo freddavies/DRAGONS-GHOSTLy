@@ -284,9 +284,6 @@ class SlitView(object):
         if correct_for_sky or append_sky:
             # Get the flat profile from the flat image.
             flat_profile = self.slit_profile(arm=arm, use_flat=True, reverse_profile=True)
-            # CORRECTION FOR J1514-3250:
-            # fcorr = 1/1.4
-            # flat_profile[self.object_boundaries[arm][1][0]:self.object_boundaries[arm][1][1]+1] *= fcorr
 
         # WARNING: This is done in the extracted profile space. Is there any
         # benefit to doing this in pixel space? Maybe yes for the centroid.

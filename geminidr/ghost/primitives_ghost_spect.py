@@ -1219,6 +1219,7 @@ class GHOSTSpect(GHOST):
         ftol = params["ftol"]
         apply_centroids = params["apply_centroids"]
         timing = params["debug_timing"]
+        vignetting = params["vignetting"]
 
         # This check is to head off problems where the same flat is used for
         # multiple ADs and gets binned but then needs to be rebinned (which
@@ -1301,6 +1302,14 @@ class GHOSTSpect(GHOST):
             arm = GhostArm(arm=ad.arm(), mode=res_mode,
                            detector_x_bin=ad.detector_x_bin(),
                            detector_y_bin=ad.detector_y_bin())
+                           
+            # Correction for J1514-3250
+            if vignetting is not None:
+                arm_flat = GhostArm(arm=flat.arm(), mode=res_mode,
+                               detector_x_bin=flat.detector_x_bin(),
+                               detector_y_bin=flat.detector_y_bin())
+            else:
+                arm_flat = None
 
             ifu_status = ["stowed", "sky", "object"]
             if ifu1 is None:
@@ -1375,6 +1384,9 @@ class GHOSTSpect(GHOST):
 
             arm.spectral_format_with_matrix(flat[0].XMOD, wpars[0].data,
                         spatpars[0].data, specpars[0].data, rotpars[0].data)
+            if vignetting is not None:
+                arm_flat.spectral_format_with_matrix(flat[0].XMOD, wpars[0].data,
+                            spatpars[0].data, specpars[0].data, rotpars[0].data)
             sview_kwargs = {} if slit is None else {"binning": slit.detector_x_bin()}
             sview = SlitView(slit_data, slitflat_data,
                              slitvpars.TABLE[0], mode=res_mode,
@@ -1445,6 +1457,9 @@ class GHOSTSpect(GHOST):
                     binned_blaze[binned_blaze < 0.0001] = np.inf
                     correction = 1. / binned_blaze
                     
+            # Pass through scattered light if it exists
+            slight = ad[0].variance.copy()
+                    
             for i, (o, s, cr) in enumerate(zip(objs_to_use, use_sky, find_crs)):
                 if o:
                     log.stdinfo(f"\nExtracting objects {str(o)}; sky subtraction {str(s)}")
@@ -1462,7 +1477,9 @@ class GHOSTSpect(GHOST):
                     correction=correction, optimal=optimal_extraction,
                     apply_centroids=apply_centroids, ftol=ftol,
                     min_flux_frac=min_flux_frac, timing=timing,
-                    flat=flat, method = extract_method
+                    flat=flat, method = extract_method,
+                    vignetting=vignetting, arm_flat=arm_flat,
+                    slight=slight
                 )
 
                 # Flag pixels with VAR=0 that don't already have a flag
@@ -1974,6 +1991,10 @@ class GHOSTSpect(GHOST):
                 log.stdinfo(f"Saving scattered light model as {ad_scatt.filename}")
                 ad_scatt.write(overwrite=True)
             ad[0].subtract(scattered_light)
+            
+            # Need to propagate the scattered light through for accurate variance computation
+            # Probably a better way to do it, but AstroData has an extra data structure here...
+            ad[0].variance = scattered_light
 
             gt.mark_history(ad, primname=self.myself(), keyword=timestamp_key)
             ad.update_filename(suffix=params["suffix"], strip=True)

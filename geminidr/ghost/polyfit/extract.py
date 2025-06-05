@@ -257,7 +257,9 @@ class Extractor(object):
                     used_objects=[0, 1], debug_pixel=None,
                     apply_centroids=False, correction=None, ftol=0.001,
                     min_flux_frac=0, timing=False,
-                    flat=None, method = "old"):
+                    flat=None, method="old",
+                    vignetting=None, arm_flat=None,
+                    slight=None):
         """
         Do a complete extraction of all objects from the echellogram.
 
@@ -428,10 +430,54 @@ class Extractor(object):
             elif method == "new": # use LACosmic instead
                 # FBD: TODO: Make the LACosmic parameters binning-dependent!
                 #      These numbers are tuned for 1x8 binning.
+                # TODO: FIX THE GAIN/READNOISE, THOSE ASSUME COUNTS, CAN PUT IN ERROR ARRAY INSTEAD?
                 lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
                 self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
                                                   DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
 
+
+        # CORRECTION FOR J1514-3250 --> IFU2 (sky) partly covered by PWFS2 probe
+        # IFU2 is located at x offsets below about -800.
+        # Will need to suppress the fiber transmission BEFORE binning.
+        #embed()
+        if vignetting is not None:
+            print("    Correcting for vignetting (J1514-3250)...")
+            fcorr = vignetting # [tune this]
+            ifu2_edge = -315 # pixels below this edge are from IFU2 [tune this]
+            for i in range(nm):
+                for j in (0, ny-1):
+                    slit_center = arm_flat.x_map[i, j] + arm_flat.szx // 2
+                    x_ix, phi, profiles = resample_slit_profiles_to_detector(
+                        profiles, profile_y_microns, slit_center,
+                        detpix_microns=arm_flat.matrices[i, j, 0, 0])
+                    if j == 0:
+                        limits = (x_ix.min(), x_ix.max())
+                    elif x_ix.min() < limits[0]:
+                        xmin, xmax = x_ix.min(), limits[1]
+                    else:
+                        xmin, xmax = limits[0], x_ix.max()
+                nrows = xmax - xmin + 1
+                pixel_array = np.zeros((ny, nrows))
+                pixel_array_x = np.zeros_like(pixel_array)
+                for j in range(ny):
+                    slit_center = arm_flat.x_map[i, j] + arm_flat.szx // 2
+                    x_ix, phi, profiles = resample_slit_profiles_to_detector(
+                        profiles, profile_y_microns, slit_center,
+                        detpix_microns=arm_flat.matrices[i, j, 0, 0])
+                    # Deal with edge effects...
+                    on_array = np.logical_and(x_ix >=0, x_ix < arm_flat.szx)
+                    phi /= phi.sum(axis=1)[:, np.newaxis]
+                    # Calculate extraction location for each spatial pixel by
+                    # including contributions from non-collinear slit and slit tilt
+                    pixel_array_x[j,x_ix.min()-xmin:x_ix.max()-xmin+1] = (x_ix-slit_center)*arm_flat.matrices[i,j,0,0]
+                for ix in range(max(xmin, 0), min(xmax+1, arm_flat.szx)):
+                    pixel_array[:,ix-xmin] = flat[0].data[ix]
+
+                vmask = pixel_array_x < ifu2_edge
+                pixel_array[vmask] *= fcorr
+                flat.data[0][xmin:xmax+1,:] = pixel_array.T
+
+        embed()
 
         # Handle the flat field
         if method == "new": # need to re-bin to data binning
@@ -447,6 +493,8 @@ class Extractor(object):
             obj_prof_save = np.zeros((nm,2,100))
         elif method == "arc" or method == "flat":
             flat_data = flat.data[0]
+            
+        #embed()
             
         # Now do the extraction. First determine *where* to extract
         extracted_flux = np.zeros((nm, ny, no), dtype=np.float32)
@@ -739,6 +787,9 @@ class Extractor(object):
             # Save the original pixel array?
             pixel_array_y = np.copy(pixel_array)
             
+            # Prepare scattered light segment
+            slight_array = np.zeros_like(pixel_array)
+            
             # Do the interpolation for all wavelengths in this order
             # Save memory by overwriting the array of pixel locations with values
             mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
@@ -757,6 +808,7 @@ class Extractor(object):
                             pixel_array[:, ix-xmin], np.arange(ny), data[ix])
                     elif method == "new" or method == "arc" or method == "flat":
                         pixel_array[:,ix-xmin] = data[ix]
+                        slight_array[:,ix-xmin] = slight[ix]
                 else:
                     if method == "old":
                         pixel_array[:, ix-xmin] = np.interp(
@@ -764,6 +816,7 @@ class Extractor(object):
                             np.arange(ny), data[ix] * correction[i])
                     elif method == "new" or method == "arc" or method == "flat":
                         pixel_array[:,ix-xmin] = data[ix] * correction[i]
+                        slight_array[:,ix-xmin] = slight[ix] * correction[i]
 
             if debug_pixel[0] == self.arm.m_min+i:
                 for ix, y in enumerate(y_locations):
@@ -788,7 +841,7 @@ class Extractor(object):
                 #                if i == 10:
                 #                    debug_this_pixel = True
                 
-                if i == 0 or method == "old":
+                if method == "old":
                     _slice = (j, slice(x_ix_min, x_ix_min+phi.shape[1]))
                     xtr = Extractum(phi, pixel_array[_slice],
                                     mask=mask_array[_slice].astype(bool),
@@ -833,7 +886,10 @@ class Extractor(object):
 
                 phi_scaled = phi * model_amps[:, np.newaxis]
                 sum_models = phi_scaled.sum(axis=0)
-                col_var = noise_model(sum_models)  # definitely +ve everywhere
+                if method == "old":
+                    col_var = noise_model(sum_models+slight_array[_slice])
+                else:
+                    col_var = noise_model(sum_models+slight_array[use_mask][sort])  # add scattered light
                 frac = astrotools.divide0(phi_scaled, sum_models)
                 frac[:, xtr.mask] = 0
                 
