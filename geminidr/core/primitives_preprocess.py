@@ -139,6 +139,8 @@ class Preprocess(PrimitivesBASE):
             # has units of electrons so update the physical units keyword.
             ad.hdr.set('BUNIT', 'electron', self.keyword_comments['BUNIT'])
             try:
+                read_noise = gt.array_from_descriptor_value(ext, "read_noise")
+                ad.hdr.set(ad._keyword_for("read_noise"),np.unique(read_noise)[0]/np.unique(gain)[0])
                 ad.hdr.set(ad._keyword_for("gain"), 1.)
             except AttributeError:  # No keyword for "gain"
                 pass

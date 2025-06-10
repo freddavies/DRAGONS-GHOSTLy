@@ -1439,7 +1439,8 @@ class GHOSTSpect(GHOST):
                 slitflat_data = sview.fake_slitimage()
 
             extractor = Extractor(arm, sview, badpixmask=ad[0].mask,
-                                  vararray=ad[0].variance)
+                                  vararray=ad[0].variance,
+                                  rnoise=ad[0].read_noise())
                         
             # FIXME: This really could be done as part of flat processing!
             correction = None
@@ -1993,7 +1994,7 @@ class GHOSTSpect(GHOST):
             ad[0].subtract(scattered_light)
             
             # Need to propagate the scattered light through for accurate variance computation
-            # Probably a better way to do it, but AstroData has an extra data structure here...
+            # Since the original variance array is easy to re-compute, we stash it there.
             ad[0].variance = scattered_light
 
             gt.mark_history(ad, primname=self.myself(), keyword=timestamp_key)

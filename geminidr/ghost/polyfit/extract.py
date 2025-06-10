@@ -357,6 +357,15 @@ class Extractor(object):
         profile_y_microns = (np.arange(n_slitpix) -
                              n_slitpix / 2 + 0.5) * self.slitview.microns_pix
 
+        
+        # If we have subtracted off the scattered light, it is stored in the vararray
+        # So we need to reconstruct the vararray using the data and detector parameters
+        # Ideally in the future we will make loading in the scattered light model
+        # more straightforward, this is just a hack for now to avoid making big changes
+        # to the data structures.......
+        if method == "new":
+            self.vararray = data + slight + (self.rnoise)**2
+
         m_init = models.Polynomial1D(degree=1)
         fit_it = fitting.FittingWithOutlierRemoval(fitting.LinearLSQFitter(), sigma_clip)
         good = ~np.isinf(self.vararray) & ((self.badpixmask & DQ.not_signal) == 0)
@@ -436,12 +445,16 @@ class Extractor(object):
                                                   DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
 
 
+        # Get a copy of the flat
+        flat_data = np.copy(flat.data[0])
+
+
         # CORRECTION FOR J1514-3250 --> IFU2 (sky) partly covered by PWFS2 probe
         # IFU2 is located at x offsets below about -800.
         # Will need to suppress the fiber transmission BEFORE binning.
         #embed()
         if vignetting is not None:
-            print("    Correcting for vignetting (J1514-3250)...")
+            print("    Correcting for vignetting={} (J1514-3250)...".format(vignetting))
             fcorr = vignetting # [tune this]
             ifu2_edge = -315 # pixels below this edge are from IFU2 [tune this]
             for i in range(nm):
@@ -473,26 +486,25 @@ class Extractor(object):
                 for ix in range(max(xmin, 0), min(xmax+1, arm_flat.szx)):
                     pixel_array[:,ix-xmin] = flat[0].data[ix]
 
-                vmask = pixel_array_x < ifu2_edge
-                pixel_array[vmask] *= fcorr
-                flat.data[0][xmin:xmax+1,:] = pixel_array.T
+                vmask = (pixel_array_x < ifu2_edge) & (pixel_array_x != 0)
+                
+                for y, x in np.vstack(np.where(vmask)).T:
+                    flat_data[xmin+x,y] = pixel_array[y,x]*fcorr
 
-        embed()
+        #embed()
 
         # Handle the flat field
         if method == "new": # need to re-bin to data binning
             xbin = self.arm.xbin
             ybin = self.arm.ybin
             fnx, fny = flat.data[0].shape
-            flat_data = np.zeros((fnx//xbin,fny//ybin))
+            flat_data2 = np.zeros((fnx//xbin,fny//ybin))
             # Rebin into xbin * ybin buckets,
             print("    Re-binning flatfield")
             for ii in range(fnx):
                 for jj in range(fny):
-                    flat_data[ii//xbin,jj//ybin] += flat.data[0][ii,jj]
-            obj_prof_save = np.zeros((nm,2,100))
-        elif method == "arc" or method == "flat":
-            flat_data = flat.data[0]
+                    flat_data2[ii//xbin,jj//ybin] += flat_data[ii,jj]
+            flat_data = flat_data2
             
         #embed()
             
@@ -609,7 +621,7 @@ class Extractor(object):
                                                    method='linear',bounds_error=False,fill_value=0.0)
                 
         if method == "new": # don't need to do this for arc/flat
-            good_orders = [5,6,7,8,9,10,11] # This ranges from ~9000A to zlya~5.4,
+            good_orders = [4,5,6,7,8,9,10,11,12] # This ranges from ~9000A to zlya~5.3,
                             # orders which should have a lot of flux in GHOSTLy
             print("\n    Determining object profile from good order indices "+str(good_orders[0])+" to "+str(good_orders[-1]))
             # Now grab all the pixels corresponding to the profiles
@@ -691,7 +703,7 @@ class Extractor(object):
             # Now create the object profile
             nseg = 5
             ycen = np.linspace(0,ny,nseg)
-            bins = np.linspace(px.min()*0.98,px.max()*0.98,51)
+            bins = np.linspace(px.min()*0.98,px.max()*0.98,61)
             cens = (bins[1:]+bins[:-1])/2
             profs = np.zeros((nseg,len(cens)))
             use_mask = (px > bins[0]) & (px < bins[-1])
