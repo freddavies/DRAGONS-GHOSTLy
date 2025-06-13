@@ -259,6 +259,7 @@ class Extractor(object):
                     min_flux_frac=0, timing=False,
                     flat=None, method="old",
                     vignetting=None, arm_flat=None,
+                    nspl_flat=9, nspl_obj=5,
                     slight=None):
         """
         Do a complete extraction of all objects from the echellogram.
@@ -588,12 +589,12 @@ class Extractor(object):
 
                     
             # Now create median filtered profiles, making it possible to also stack orders together
-            nseg = 9
-            ycen = np.linspace(0,ny,nseg)
+            nspl_flat = 9
+            ycen = np.linspace(0,ny,nspl_flat)
             nord = nm
             bins = np.linspace(px.min()*0.99,px.max()*0.99,101)
             cens = (bins[1:]+bins[:-1])/2
-            profs = np.zeros((nord,nseg,len(cens)))
+            profs = np.zeros((nord,nspl_flat,len(cens)))
             print("\n    Filtering flat profiles and constructing interpolator ", end="")
             for jj in range(nord):
                 print(f"{self.arm.m_min+jj}...", end="")
@@ -602,8 +603,8 @@ class Extractor(object):
                 # In principle we could make "nord" jump in steps of n orders,
                 # and then have use_mask select sets of three orders, i.e. (po//3 == jj//3) or something.
                 # Maybe not necessary?
-                for kk in range(nseg):
-                    use_mask2 = use_mask & (py > (kk-0.5)*ny//(nseg-1)) & (py < (kk+0.5)*ny//(nseg-1))
+                for kk in range(nspl_flat):
+                    use_mask2 = use_mask & (py > (kk-0.5)*ny//(nspl_flat-1)) & (py < (kk+0.5)*ny//(nspl_flat-1))
                     for ii in range(len(cens)):
                         bin_pix = (px > bins[ii]) & (px < bins[ii+1])
                         profs[jj,kk,ii] = np.median(pn[use_mask2 & bin_pix])
@@ -612,7 +613,7 @@ class Extractor(object):
             # Sometimes there are gaps in the profiles -- try to fill them in.
             if np.sum(np.isnan(profs)) > 0:
                 for jj in range(nord):
-                    for kk in range(nseg):
+                    for kk in range(nspl_flat):
                         for ii in range(len(cens)):
                             if np.isnan(profs[jj,kk,ii]):
                                 profs[jj,kk,ii] = 0.5*(profs[jj,kk,ii-1]+profs[jj,kk,ii+1])
@@ -701,21 +702,21 @@ class Extractor(object):
                 py = np.append(pixel_array_y[good_pix],py)
 
             # Now create the object profile
-            nseg = 5
-            ycen = np.linspace(0,ny,nseg)
+            nspl_obj = 5
+            ycen = np.linspace(0,ny,nspl_obj)
             bins = np.linspace(px.min()*0.98,px.max()*0.98,61)
             cens = (bins[1:]+bins[:-1])/2
-            profs = np.zeros((nseg,len(cens)))
+            profs = np.zeros((nspl_obj,len(cens)))
             use_mask = (px > bins[0]) & (px < bins[-1])
-            for kk in range(nseg):
-                use_mask2 = use_mask & (py > (kk-0.5)*ny//(nseg-1)) & (py < (kk+0.5)*ny//(nseg-1))
+            for kk in range(nspl_obj):
+                use_mask2 = use_mask & (py > (kk-0.5)*ny//(nspl_obj-1)) & (py < (kk+0.5)*ny//(nspl_obj-1))
                 for ii in range(len(bins)-1):
                     bin_pix = (px > bins[ii]) & (px < bins[ii+1])
                     profs[kk,ii] = np.median(pn[use_mask2 & bin_pix])
  
             # Sometimes there are gaps in the profiles -- try to fill them in.
             if np.sum(np.isnan(profs)) > 0:
-                for kk in range(nseg):
+                for kk in range(nspl_obj):
                     for ii in range(len(cens)):
                         if np.isnan(profs[kk,ii]):
                             profs[kk,ii] = 0.5*(profs[kk,ii-1]+profs[kk,ii+1])
@@ -974,10 +975,10 @@ class Extractor(object):
                 print(datetime.now() - start)
                 
             do_plot = False
-            #            if i == 10 or i == 20:
-            #                do_plot = True
-            #            else:
-            #                do_plot = False
+            if i == 10 or i == 20:
+                do_plot = True
+            else:
+                do_plot = False
             if do_plot:
                 pixel_array_model = np.zeros_like(pixel_array)
                 pixel_array_model2 = np.zeros_like(pixel_array)
@@ -985,7 +986,7 @@ class Extractor(object):
                     paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
                     xval = pixel_array_x[paint]
                     sort = np.argsort(xval)
-                    sort2 = np.argsort(sort)
+                    sort2 = np.argsort(sort) # have to be able to unsort to evaluate the flat profile spline
                     if method == "new":
                         pixel_array_model[paint] = extracted_flux[i][j,0]*obj_profile(j,xval[sort])[0][sort2]
                     pixel_array_model2[paint] = extracted_flux[i][j,1]*flat_profile([[i,j,xval[sort][k]] for k in range(len(xval[sort]))])[sort2]#np.interp(pixel_array_x[paint],cens_flat,prof_flat,left=0,right=0)
