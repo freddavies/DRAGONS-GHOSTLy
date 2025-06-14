@@ -20,7 +20,7 @@ from .extractum import Extractum
 
 from IPython import embed
 import lacosmic
-
+from pypeit.core import fitting as pypeit_fitting
 
 log = logutils.get_logger(__name__)
 
@@ -444,7 +444,8 @@ class Extractor(object):
                 lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
                 self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
                                                   DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
-
+                cr_mask =
+                
 
         # Get a copy of the flat
         flat_data = np.copy(flat.data[0])
@@ -731,6 +732,8 @@ class Extractor(object):
         for i in range(nm):
             print(f"{self.arm.m_min+i}...", end="")
             sys.stdout.flush()
+            
+            get_xmin_xmax()
 
             # Determine which rows have data from this order
             for j in (0, ny-1):
@@ -758,6 +761,9 @@ class Extractor(object):
 
             # Code is written in this way to minimize the number of calls to
             # np.interp -- calling for each pixel is very slow
+            
+            pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array()
+            
             for j in range(ny):
                 debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
                 slit_center = x_map[i, j] + nx // 2
@@ -806,35 +812,84 @@ class Extractor(object):
             # Do the interpolation for all wavelengths in this order
             # Save memory by overwriting the array of pixel locations with values
             mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
-            for ix in range(max(xmin, 0), min(xmax+1, nx)):
-                # Flag any virtual pixel that is partly flagged in the mask
+            
+            if method == "new" or method == "arc" or method == "flat":
+                pixel_array = data[xmin:xmax+1,:].T
+                slight_array = slight[xmin:xmax+1,:].T
                 for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
-                    if method == "old":
+                    mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+                if correction:
+                    pixel_array *= correction[i]
+                    slight_array *= correction[i]
+            elif method == "old":
+                for ix in range(max(xmin, 0), min(xmax+1, nx)):
+                    # Flag any virtual pixel that is partly flagged in the mask
+                    for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
                         mask_array[:, ix-xmin] |= (np.interp(
                             pixel_array[:, ix-xmin], np.arange(ny),
                             (self.badpixmask[ix] & bit).astype(float)) > 0) * bit
-                    elif method == "new" or method == "arc" or method == "flat":
-                        mask_array[:, ix-xmin] |= ((self.badpixmask[ix] & bit).astype(float) > 0) * bit
-                if correction is None:
-                    if method == "old":
+                    if correction is None:
                         pixel_array[:, ix-xmin] = np.interp(
                             pixel_array[:, ix-xmin], np.arange(ny), data[ix])
-                    elif method == "new" or method == "arc" or method == "flat":
-                        pixel_array[:,ix-xmin] = data[ix]
-                        slight_array[:,ix-xmin] = slight[ix]
-                else:
-                    if method == "old":
+                    else:
                         pixel_array[:, ix-xmin] = np.interp(
                             pixel_array[:, ix-xmin],
                             np.arange(ny), data[ix] * correction[i])
-                    elif method == "new" or method == "arc" or method == "flat":
-                        pixel_array[:,ix-xmin] = data[ix] * correction[i]
-                        slight_array[:,ix-xmin] = slight[ix] * correction[i]
-
+                            
             if debug_pixel[0] == self.arm.m_min+i:
                 for ix, y in enumerate(y_locations):
                     log.debug(ix+x1+xmin, y,  pixel_array[yy, ix+x1], mask_array[yy, ix+x1])
                     
+            
+
+            skyfit = do_pypeit_skysub(pixel_array,pixel_array_y,pixel_array_x,flat_profile)
+
+            # Experimental sky subtraction stuff
+            # First: compute the flat profile everywhere
+            profile = flat_profile([[i,pixel_array_y.flatten()[k],pixel_array_x.flatten()[k]] for k in range(len(pixel_array.flatten()))])
+            # Now prepare the data for a bspline fit
+            xdata = pixel_array_y.flatten()
+            ydata = pixel_array.flatten()
+            invvar = 1/noise_model((pixel_array+slight_array).flatten())
+            cr_mask = ~lacos[1][xmin:xmax+1,:].T.flatten()
+            mask = cr_mask & (pixel_array_x.flatten() != 0) & (profile > 0.04) & (pixel_array_x.flatten() < 50)
+            ydata[mask] /= profile[mask]
+            invvar[mask] *= (profile[mask])**2
+
+            # bspline needs everything to be sorted in order of spectral pixel
+            isrt = np.argsort(xdata)
+            isrt2 = np.argsort(isrt)
+            xdata = xdata[isrt]
+            ydata = ydata[isrt]
+            invvar = invvar[isrt]
+            mask = mask[isrt]
+
+            _, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+                                                              ingpm=mask,kwargs_bspline={'bkspace':1.1},
+                                                              kwargs_reject={'groupbadpix':True, 'maxrej': 10})
+
+            # Unsort everything for inspection
+            xdata = xdata[isrt2]
+            ydata = ydata[isrt2]
+            invvar = invvar[isrt2]
+            mask = mask[isrt2]
+            yfit = yfit[isrt2]
+
+            ydata[mask] *= profile[mask]
+            invvar[mask] /= profile[mask]**2
+            yfit *= profile
+                            
+            plt.imshow((~lacos[1][xmin:xmax+1,:].T)*(pixel_array_x != 0)*
+                       (pixel_array-yfit.reshape(pixel_array.shape))*
+                       (np.sqrt(invvar.reshape(pixel_array.shape))),
+                        vmin=-5,vmax=5,cmap='RdBu_r')
+                        
+            plt.show()
+            
+            embed()
+                        
+            pixel_array -= yfit.reshape(pixel_array.shape)
+
 
             for j, (x_ix_min, phi) in enumerate(all_phi):  # range(ny)
                 debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
@@ -871,7 +926,7 @@ class Extractor(object):
                     # stick to the usual one for now.
                     use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
                     if method == "new": # Extra mask to deal with weird stuff at edge
-                        use_mask = use_mask #& (pixel_array_x > -1600) #& (pixel_array_x < 1870)
+                        use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
                     xval = pixel_array_x[use_mask]
                     sort = np.argsort(xval)
                     if method == "new":
@@ -964,8 +1019,6 @@ class Extractor(object):
                                                        ((phi > 0) * DQ.max), axis=1)
                 extracted_mask[i, j, bad_frac] = mask_per_object[bad_frac]
                 
-                
-
                 if debug_this_pixel:
                     log.debug("EXTRACTED FLUXES", extracted_flux[i, j])
                     log.debug("EXTRACTED MASK", extracted_mask[i, j])
@@ -1004,10 +1057,10 @@ class Extractor(object):
                     x.set_xlim(0,200)
                 plt.tight_layout()
                 plt.show()
-            #embed()
+                embed()
         print("\n")
         
-        
+        #embed()
 
         return extracted_flux, extracted_mask, extracted_var
 
