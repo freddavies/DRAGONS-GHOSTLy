@@ -21,7 +21,7 @@ from .extractum import Extractum
 from IPython import embed
 import lacosmic
 from pypeit.core import fitting as pypeit_fitting
-from numba import njit
+from numba import njit, prange
 
 log = logutils.get_logger(__name__)
 
@@ -460,6 +460,7 @@ class Extractor(object):
         start = datetime.now()
         profiles = profiles[:no]
         
+        #embed()
 
         # Grab all the spatial position/normalized profile pairs
         if method == "new" or method == "arc" or method == "flat":
@@ -513,9 +514,10 @@ class Extractor(object):
                             if np.isnan(profs[jj,kk,ii]):
                                 profs[jj,kk,ii] = 0.5*(profs[jj,kk,ii-1]+profs[jj,kk,ii+1])
                         
+            # Don't really see a need to make this a 3d interpolator, since the orders
+            # are always evaluated at specific numbers...
             #flat_profile = RegularGridInterpolator((np.arange(nord),ycen,cens),profs,
             #                                       method='linear',bounds_error=False,fill_value=0.0)
-            embed()
             flat_profile = [None for jj in range(nord)]
             for jj in range(nord):
                 flat_profile[jj] = RectBivariateSpline(ycen,cens,profs[jj])
@@ -538,9 +540,8 @@ class Extractor(object):
                 pixel_array_y = np.copy(pixel_array)
                 slight_array = np.zeros_like(pixel_array)
                 
-                
-                pixel_array = data[xmin:xmax+1,:].T
-                slight_array = slight[xmin:xmax+1,:].T
+                pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                slight_array = np.copy(slight[xmin:xmax+1,:].T)
                 mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
                 for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
                     mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
@@ -553,11 +554,11 @@ class Extractor(object):
                 if sky_spline: # either with the fancy pypeit thing
                     skyfit = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                              flat_profile,noise_model,lacos,slight_array)
-                    pixel_array -= skyfit
                     for j in range(ny):
                         mask = good_pix & (np.abs(pixel_array_y-j) < 0.5)
                         xval = pixel_array_x[mask]
-                        pixel_array_norm[mask] /= np.sum(pixel_array[mask & (pixel_array_x > 0)])
+                        pixel_array_norm[mask] = (pixel_array-skyfit)[mask]
+                        pixel_array_norm[mask] /= np.sum((pixel_array-skyfit)[mask & (pixel_array_x > 0)])
                 else: # or a rough approximation using the flat profile
                     for j in range(ny):
                         mask = good_pix & (np.abs(pixel_array_y-j) < 0.5)
@@ -588,14 +589,6 @@ class Extractor(object):
             
             profs = get_spatial_profiles(1,bins,nspl_obj,ny,np.zeros_like(px),px,py,pn)[0]
             
-#            profs = np.zeros((nspl_obj,len(cens)))
-#            use_mask = (px > bins[0]) & (px < bins[-1])
-#            for kk in range(nspl_obj):
-#                use_mask2 = use_mask & (py > (kk-0.5)*ny//(nspl_obj-1)) & (py < (kk+0.5)*ny//(nspl_obj-1))
-#                for ii in range(len(bins)-1):
-#                    bin_pix = (px > bins[ii]) & (px < bins[ii+1])
-#                    profs[kk,ii] = np.median(pn[use_mask2 & bin_pix])
-# 
             # Sometimes there are gaps in the profiles -- try to fill them in.
             if np.sum(np.isnan(profs)) > 0:
                 for kk in range(nspl_obj):
@@ -605,8 +598,6 @@ class Extractor(object):
                         
             obj_profile = RectBivariateSpline(ycen,cens,profs)
             
-        #embed()
-
         print("\n\n    Extracting order ", end="")
         c0, c1 = m_noise.parameters
         for i in range(nm):
@@ -630,8 +621,8 @@ class Extractor(object):
             mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
             
             if method == "new" or method == "arc" or method == "flat":
-                pixel_array = data[xmin:xmax+1,:].T
-                slight_array = slight[xmin:xmax+1,:].T
+                pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                slight_array = np.copy(slight[xmin:xmax+1,:].T)
                 for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
                     mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
                 if correction:
@@ -652,11 +643,14 @@ class Extractor(object):
                             pixel_array[:, ix-xmin],
                             np.arange(ny), data[ix] * correction[i])
                             
+            #embed()
+                            
             if sky_spline:
                 skyfit = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                          flat_profile,noise_model,lacos,slight_array)
                 pixel_array -= skyfit
 
+            #embed()
 
             for j in range(ny):
                 debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
@@ -717,7 +711,7 @@ class Extractor(object):
                 sum_models = phi_scaled.sum(axis=0)
                 tot_counts = sum_models + slight_array[use_mask][sort]
                 if sky_spline:
-                    tot_counts += skyfit[use_mask][sort]
+                    tot_counts += skyfit[use_mask][sort]*(skyfit[use_mask][sort]>0)
                 col_var = noise_model(tot_counts)  # add scattered light to noise model
                 frac = astrotools.divide0(phi_scaled, sum_models)
                 frac[:, xtr.mask] = 0
@@ -762,7 +756,7 @@ class Extractor(object):
                     #        (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
                     # New method: just use var(f) and forget the sky variance. Doesn't work on arc/flats.
                     try:
-                        extracted_var[i,j] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var)),0])
+                        extracted_var[i,j] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi),np.sum(~xtr.mask*phi*phi/col_var))])
                     except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
                         extracted_var[i, j] = abs(
                             extracted_flux[i, j] * astrotools.divide0(
@@ -789,13 +783,13 @@ class Extractor(object):
                 print(datetime.now() - start)
                 
             do_plot = False
-            if i == 10 or i == 20:
-                do_plot = True
-            else:
-                do_plot = False
+#            if i == 10 or i == 20:
+#                do_plot = True
+#            else:
+#                do_plot = False
             if do_plot:
                 pixel_array_model = np.zeros_like(pixel_array)
-                pixel_array_model2 = np.zeros_like(pixel_array)
+                #pixel_array_model2 = np.zeros_like(pixel_array)
                 for j in range(ny):
                     paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
                     xval = pixel_array_x[paint]
@@ -803,16 +797,16 @@ class Extractor(object):
                     sort2 = np.argsort(sort) # have to be able to unsort to evaluate the flat profile spline
                     if method == "new":
                         pixel_array_model[paint] = extracted_flux[i][j,0]*obj_profile(j,xval[sort])[0][sort2]
-                    pixel_array_model2[paint] = extracted_flux[i][j,1]*flat_profile[i](j,xval[sort])[0][sort2]#np.interp(pixel_array_x[paint],cens_flat,prof_flat,left=0,right=0)
+                    #pixel_array_model2[paint] = extracted_flux[i][j,1]*flat_profile[i](j,xval[sort])[0][sort2]#np.interp(pixel_array_x[paint],cens_flat,prof_flat,left=0,right=0)
                 pixel_array_model *= pixel_array_x != 0
-                pixel_array_model2 *= pixel_array_x != 0
+                #pixel_array_model2 *= pixel_array_x != 0
                 fig,ax = plt.subplots(2,2,figsize=(20,8))
-                ax[0][0].imshow(pixel_array.T-0*(np.abs(pixel_array_y-79)<0.5).T,vmin=-10,vmax=100,interpolation='none')
-                ax[0][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T-pixel_array_model2.T),#/np.sqrt(noise_model(pixel_array.T))
+                ax[0][0].imshow((pixel_array+skyfit+slight_array).T,vmin=-10,vmax=100,interpolation='none')
+                ax[0][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T),#/np.sqrt(noise_model(pixel_array.T))
                              aspect=1,interpolation='none',vmin=-10,vmax=100)#,cmap='RdBu_r')
-                ax[1][0].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array_model.T+pixel_array_model2.T),
+                ax[1][0].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array_model.T+skyfit.T),
                              vmin=-10,vmax=100,interpolation='none')
-                ax[1][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T-pixel_array_model2.T)/np.sqrt(noise_model(pixel_array.T)),
+                ax[1][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T)/np.sqrt(noise_model(pixel_array_model+skyfit).T),
                              aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r')
                 for x in ax.flatten():
                     x.set_xlim(0,200)
@@ -1208,7 +1202,7 @@ def get_slit_profile_edges(profile_y_microns,profile_center,detpix_microns):
     x_ix = np.zeros((2,),dtype=np.int32)
     x_ix[0] = int(np.round(np.min(slitview_pixel_edges)))
     x_ix[1] = int(np.round(np.max(slitview_pixel_edges)))
-    return np.arange(x_ix[0],x_ix[1])
+    return np.arange(x_ix[0],x_ix[1]+1)
 
 
 def get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices):
@@ -1261,9 +1255,9 @@ def get_spatial_profiles(nord,bins,nspl,ny,po,px,py,pn):
     for jj in range(nord):
         #print(f"{jj}...", end="")
         #sys.stdout.flush()
-        use_mask = (po == jj) & (px > bins[0]) & (px < bins[-1])
+        #use_mask = (po == jj) & (px > bins[0]) & (px < bins[-1])
         for kk in range(nspl):
-            use_mask2 = use_mask & (py > (kk-0.5)*ny//(nspl-1)) & (py < (kk+0.5)*ny//(nspl-1))
+            use_mask2 = (po == jj) & (px > bins[0]) & (px < bins[-1]) & (py > (kk-0.5)*ny//(nspl-1)) & (py < (kk+0.5)*ny//(nspl-1))
             for ii in range(len(bins)-1):
                 bin_pix = (px > bins[ii]) & (px < bins[ii+1])
                 profs[jj,kk,ii] = np.median(pn[use_mask2 & bin_pix])
@@ -1272,21 +1266,23 @@ def get_spatial_profiles(nord,bins,nspl,ny,po,px,py,pn):
 
 
 def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_profile,noise_model,lacos,slight_array,
-                  prof_min=0.25, obj_cut=True, debug=True):
+                  prof_min=0.25, obj_cut=True, debug=False):
     # Experimental sky subtraction stuff
-    # First: compute the flat profile everywhere
-    profile = flat_profile[i](pixel_array_y.flatten(),pixel_array_x.flatten())[0]
-    # Now prepare the data for a bspline fit
-    xdata = pixel_array_y.flatten()
-    ydata = pixel_array.flatten()
-    invvar = 1/noise_model((pixel_array+slight_array).flatten())
+    
+    # Compute the flat profile everywhere
+    profile = flat_profile[i](pixel_array_y.flatten(),pixel_array_x.flatten(),grid=False)
 
     # Choose which pixels to use in the fit
     cr_mask = ~lacos[1][xmin:xmax+1,:].T.flatten()
     mask = cr_mask & (pixel_array_x.flatten() != 0) & (profile > prof_min*profile.max())
     if obj_cut:
         mask = mask & (pixel_array_x.flatten() < 100)
-        
+
+    # Now prepare the data for a bspline fit
+    xdata = np.copy(pixel_array_y.flatten())
+    ydata = np.copy(pixel_array.flatten())
+    invvar = 1/noise_model((pixel_array+slight_array).flatten())
+    
     # Divide out the flatfield
     ydata[mask] /= profile[mask]
     invvar[mask] *= (profile[mask])**2
@@ -1298,7 +1294,7 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
     ydata = ydata[isrt]
     invvar = invvar[isrt]
     mask = mask[isrt]
-
+    
     _, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
                                                       ingpm=mask,kwargs_bspline={'bkspace':1.1},
                                                       kwargs_reject={'groupbadpix':True, 'maxrej': 10})
