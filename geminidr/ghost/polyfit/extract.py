@@ -449,10 +449,6 @@ class Extractor(object):
                     flat_data2[ii//xbin,jj//ybin] += flat_data[ii,jj]
             flat_data = flat_data2
             
-        
-        if sky_spline:
-            no -= 1
-        
         extracted_flux = np.zeros((nm, ny, no), dtype=np.float32)
         extracted_var = np.zeros_like(extracted_flux)
         extracted_mask = np.zeros_like(extracted_flux, dtype=DQ.datatype)
@@ -552,7 +548,7 @@ class Extractor(object):
                 # Now skysub
                 
                 if sky_spline: # either with the fancy pypeit thing
-                    skyfit = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
+                    skyfit, _ = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                              flat_profile,noise_model,lacos,slight_array)
                     for j in range(ny):
                         mask = good_pix & (np.abs(pixel_array_y-j) < 0.5)
@@ -646,7 +642,7 @@ class Extractor(object):
             #embed()
                             
             if sky_spline:
-                skyfit = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
+                skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                          flat_profile,noise_model,lacos,slight_array)
                 pixel_array -= skyfit
 
@@ -749,19 +745,34 @@ class Extractor(object):
                 # is not so clear. Variance is a bit tricky; we use the
                 # formula for VAR(f)/f in Table 1 of Horne (1986)
                 if optimal:
-                    extracted_flux[i, j] = model_amps
+                    extracted_flux[i,j,:-1] = model_amps
                     #extracted_var[i, j] = abs(
                     #    extracted_flux[i, j] * astrotools.divide0(
                     #        phi[:, ~xtr.mask].sum(axis=1),
                     #        (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
                     # New method: just use var(f) and forget the sky variance. Doesn't work on arc/flats.
                     try:
-                        extracted_var[i,j] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi),np.sum(~xtr.mask*phi*phi/col_var))])
+                        extracted_var[i,j,:-1] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi),np.sum(~xtr.mask*phi*phi/col_var))])
                     except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
                         extracted_var[i, j] = abs(
                             extracted_flux[i, j] * astrotools.divide0(
                                 phi[:, ~xtr.mask].sum(axis=1),
                                 (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                                
+                    # In skysub mode it is a bit tricky to get the sky value. But not impossible!
+                    try:
+                        extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
+                        use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x < 100)
+                        xval_sky = pixel_array_x[use_mask_sky]
+                        sort_sky = np.argsort(xval_sky)
+                        phi_sky = np.array([flat_profile[i](j,xval_sky[sort_sky])[0]])
+                        col_var_sky = noise_model(skyfit[use_mask_sky][sort_sky]+slight_array[use_mask_sky][sort_sky])
+                        sky_mask = mask_array[use_mask_sky][sort_sky].astype(bool)
+                        extracted_flux[i,j,1] /= np.mean(phi_sky[~sky_mask])
+                        extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
+                    except:
+                        extracted_flux[i,j,1] = 0.0
+                        extracted_var[i,j,1] = 0.0
                 else:
                     # Correction for flagged pixels
                     object_scaling = astrotools.divide0(phi.sum(axis=1),
@@ -769,11 +780,11 @@ class Extractor(object):
                     extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
                     extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
 
-                bad_frac = phi[:, ~xtr.mask].sum(axis=1) < min_flux_frac
-                mask_per_object = np.bitwise_or.reduce(obj_mask &
-                                                       ((phi > 0) * DQ.max), axis=1)
-                extracted_mask[i, j, bad_frac] = mask_per_object[bad_frac]
-                
+#                bad_frac = phi[:, ~xtr.mask].sum(axis=1) < min_flux_frac
+#                mask_per_object = np.bitwise_or.reduce(obj_mask &
+#                                                       ((phi > 0) * DQ.max), axis=1)
+#                extracted_mask[i, j, bad_frac] = mask_per_object[bad_frac]
+
                 if debug_this_pixel:
                     log.debug("EXTRACTED FLUXES", extracted_flux[i, j])
                     log.debug("EXTRACTED MASK", extracted_mask[i, j])
@@ -1294,8 +1305,8 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
     ydata = ydata[isrt]
     invvar = invvar[isrt]
     mask = mask[isrt]
-    
-    _, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+
+    sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
                                                       ingpm=mask,kwargs_bspline={'bkspace':1.1},
                                                       kwargs_reject={'groupbadpix':True, 'maxrej': 10})
 
@@ -1318,5 +1329,5 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
                     
         plt.show()
 
-    return yfit.reshape(pixel_array.shape)
+    return yfit.reshape(pixel_array.shape), sset.value
 
