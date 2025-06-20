@@ -260,7 +260,7 @@ class Extractor(object):
                     min_flux_frac=0, timing=False,
                     flat=None, method="old",
                     vignetting=None, arm_flat=None,
-                    nspl_flat=9, nspl_obj=5,
+                    nspl_flat=7, nspl_obj=4,
                     slight=None, sky_spline=True):
         """
         Do a complete extraction of all objects from the echellogram.
@@ -387,6 +387,15 @@ class Extractor(object):
         lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
         self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
                                           DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
+                                          
+        if method == "new":
+            extra_bpm = np.zeros_like(data)
+            extra_bpm[:384,1410:1413] = 1
+            #extra_bpm[:300,2820] = 1
+            extra_bpm[291:386,5029] = 1
+            extra_bpm[385:,5062:5064] = 1
+            extra_bpm[386:,5619:5621] = 1
+            self.badpixmask |= extra_bpm.astype(bool) * DQ.fail
         
         # Get a copy of the flat
         flat_data = np.copy(flat.data[0])
@@ -457,6 +466,49 @@ class Extractor(object):
         profiles = profiles[:no]
         
         #embed()
+        
+        # Use pypeit skysub to get a bspline model for the flat in each order
+        # Have to figure out how to set up a 2d bspline first, though.
+        # And there is a question of normalization across the spectrum. Hmm....maybe not so straightforward
+        
+#        flat_model = [None for i in range(nm)]
+#        for i in range(nm):
+#            xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
+#
+#            pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
+#                                                                              profile_y_microns,
+#                                                                              matrices,self.slit_tilt,DQ.no_data)
+#            pixel_array_y = np.copy(pixel_array)
+#        
+#            flat_array = flat_data[xmin:xmax+1,:].T
+#            mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
+#            for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
+#                mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+#        
+#            # Choose which pixels to use in the fit
+#            fit_mask = (pixel_array_x.flatten() != 0)
+#
+#            # Now prepare the data for a bspline fit
+#            xdata = np.copy(pixel_array_y.flatten())
+#            ydata = np.copy(flat_array.flatten())
+#            invvar = 1/noise_model((flat_array).flatten())
+#
+#            # bspline needs everything to be sorted in order of spectral pixel
+#            isrt = np.argsort(xdata)
+#            isrt2 = np.argsort(isrt)
+#            xdata = xdata[isrt]
+#            ydata = ydata[isrt]
+#            invvar = invvar[isrt]
+#            mask = mask[isrt]
+#
+#            sset, _, _, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+#                                                              ingpm=mask,kwargs_bspline={'bkspace':1.1},
+#                                                              kwargs_reject={'groupbadpix':True, 'maxrej': 10})
+#                                                              
+#            flat_model[i] = sset.value
+                    
+        if method == "arc" or method == "flat":
+            sky_spline = False
 
         # Grab all the spatial position/normalized profile pairs
         if method == "new" or method == "arc" or method == "flat":
@@ -496,7 +548,7 @@ class Extractor(object):
             # Now create median filtered profiles, making it possible to also stack orders together
             ycen = np.linspace(0,ny,nspl_flat)
             nord = nm
-            bins = np.linspace(px.min()*0.99,px.max()*0.99,101)
+            bins = np.linspace(px.min()*0.99,px.max()*0.99,81)
             cens = (bins[1:]+bins[:-1])/2
             print("\n    Filtering flat profiles and constructing interpolator ", end="")
 
@@ -580,7 +632,7 @@ class Extractor(object):
 
             # Now create the object profile
             ycen = np.linspace(0,ny,nspl_obj)
-            bins = np.linspace(px.min()*0.98,px.max()*0.98,81)
+            bins = np.linspace(px.min()*0.98,px.max()*0.98,61)
             cens = (bins[1:]+bins[:-1])/2
             
             profs = get_spatial_profiles(1,bins,nspl_obj,ny,np.zeros_like(px),px,py,pn)[0]
@@ -687,7 +739,7 @@ class Extractor(object):
                     else:
                         phi = np.array([phi_obj,phi_sky])
                 else:
-                    phi_all = flat_profile[i](j,xval[sort])
+                    phi_all = flat_profile[i](j,xval[sort])[0]
                     phi = np.array([phi_all])
             
                 xtr = Extractum(phi, pixel_array[use_mask][sort],
@@ -714,33 +766,34 @@ class Extractor(object):
                 
                 # FBD: Clean up the remaining cosmic rays Horne 1986 style
                 # by running one extra iteration of the fit.
-                # Doesn't quite work yet because sky model is not precise enough
-                #                if i > 0 and method == "new":
-                #                    clip = 50.0 # 15-sigma clip for Horne masking. Has to be fairly weak because profiles are inaccurate.
-                #                    diff2 = (pixel_array[use_mask][sort]-sum_models)**2
-                #                    var = col_var #noise_model(pixel_array[use_mask][sort])
-                #                    bad_pix = (diff2 > var*clip**2)
-                #                    #print(bad_pix)
-                #
-                #                    xtr = Extractum(phi, pixel_array[use_mask][sort],
-                #                                    mask=(mask_array[use_mask][sort]+bad_pix).astype(bool),
-                #                                    noise_model=noise_model,
-                #                                    pixel=(self.arm.m_min+i, j))
-                #
-                #                    obj_mask = mask_array[use_mask][sort]+bad_pix
-                #
-                #                    try:
-                #                        model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                #                                             c1=c1, ftol=ftol)
-                #                    except:
-                #                        model_amps = np.zeros(phi.shape[0])
-                #
-                #                    phi_scaled = phi * model_amps[:, np.newaxis]
-                #                    sum_models = phi_scaled.sum(axis=0)
-                #                    col_var = noise_model(sum_models)  # definitely +ve everywhere
-                #                    frac = astrotools.divide0(phi_scaled, sum_models)
-                #                    frac[:, xtr.mask] = 0
+                if i > 0 and method == "new":
+                    clip = 8.0 # Sigma clip for Horne masking. Has to be fairly weak because profiles are inaccurate.
+                    diff2 = (pixel_array[use_mask][sort]-sum_models)**2
+                    var = col_var #noise_model(pixel_array[use_mask][sort])
+                    bad_pix = (diff2 > var*clip**2)
+                    #print(bad_pix)
 
+                    xtr = Extractum(phi, pixel_array[use_mask][sort],
+                                    mask=(mask_array[use_mask][sort]+bad_pix).astype(bool),
+                                    noise_model=noise_model,
+                                    pixel=(self.arm.m_min+i, j))
+                                    
+                    obj_mask = mask_array[use_mask][sort]
+                                
+                    try:
+                        model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                             c1=c1, ftol=ftol)
+                    except:
+                        embed()
+
+                    phi_scaled = phi * model_amps[:, np.newaxis]
+                    sum_models = phi_scaled.sum(axis=0)
+                    tot_counts = sum_models + slight_array[use_mask][sort]
+                    if sky_spline:
+                        tot_counts += skyfit[use_mask][sort]*(skyfit[use_mask][sort]>0)
+                    col_var = noise_model(tot_counts)  # add scattered light to noise model
+                    frac = astrotools.divide0(phi_scaled, sum_models)
+                    frac[:, xtr.mask] = 0
                 # Optimally-extracted flux is well-defined. Uniform extraction
                 # is not so clear. Variance is a bit tricky; we use the
                 # formula for VAR(f)/f in Table 1 of Horne (1986)
@@ -760,19 +813,20 @@ class Extractor(object):
                                 (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
                                 
                     # In skysub mode it is a bit tricky to get the sky value. But not impossible!
-                    try:
-                        extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
-                        use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x < 100)
-                        xval_sky = pixel_array_x[use_mask_sky]
-                        sort_sky = np.argsort(xval_sky)
-                        phi_sky = np.array([flat_profile[i](j,xval_sky[sort_sky])[0]])
-                        col_var_sky = noise_model(skyfit[use_mask_sky][sort_sky]+slight_array[use_mask_sky][sort_sky])
-                        sky_mask = mask_array[use_mask_sky][sort_sky].astype(bool)
-                        extracted_flux[i,j,1] /= np.mean(phi_sky[~sky_mask])
-                        extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
-                    except:
-                        extracted_flux[i,j,1] = 0.0
-                        extracted_var[i,j,1] = 0.0
+                    if sky_spline:
+                        try:
+                            extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
+                            use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x < 100)
+                            xval_sky = pixel_array_x[use_mask_sky]
+                            sort_sky = np.argsort(xval_sky)
+                            phi_sky = np.array([flat_profile[i](j,xval_sky[sort_sky])[0]])
+                            col_var_sky = noise_model(skyfit[use_mask_sky][sort_sky]+slight_array[use_mask_sky][sort_sky])
+                            sky_mask = mask_array[use_mask_sky][sort_sky].astype(bool)
+                            extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
+                            extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
+                        except:
+                            extracted_flux[i,j,1] = 0.0
+                            extracted_var[i,j,1] = 0.0
                 else:
                     # Correction for flagged pixels
                     object_scaling = astrotools.divide0(phi.sum(axis=1),

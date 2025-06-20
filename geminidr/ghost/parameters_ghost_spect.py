@@ -102,6 +102,7 @@ class extractSpectraConfig(config.Config):
                                "available", float, None, min=0.2, optional=True)
     vignetting = config.RangeField("Vignetting experienced by IFU2",
                                    float, None, min=0.1, optional=True)
+    
     debug_cr_map = config.Field("Add CR map to output?", bool, False)
     debug_order = config.RangeField("Order for CR debugging plot", int, None,
                                        min=33, max=97, optional=True)
