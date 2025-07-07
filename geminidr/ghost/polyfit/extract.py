@@ -384,14 +384,19 @@ class Extractor(object):
         # FBD: TODO: Make the LACosmic parameters binning-dependent!
         #      These numbers are tuned for 1x8 binning.
         # TODO: FIX THE GAIN/READNOISE, THOSE ASSUME COUNTS, CAN PUT IN ERROR ARRAY INSTEAD?
-        lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
-        self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
-                                          DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
-                                          
+        if method == "new":
+            lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
+            self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
+                                              DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
+        
+        # FBD: The existing GHOST BPM is missing some long-term bad pixel features
+        # However, from night to night, there are occasionally other vertical features
+        # Should probably figure out if there is a way to find those automatically,
+        # otherwise they have to be added here by hand.
         if method == "new":
             extra_bpm = np.zeros_like(data)
             extra_bpm[:384,1410:1413] = 1
-            #extra_bpm[:300,2820] = 1
+            #extra_bpm[:300,2820] = 1 # This was a transitory bad column in one of the 2024B exposures
             extra_bpm[291:386,5029] = 1
             extra_bpm[385:,5062:5064] = 1
             extra_bpm[386:,5619:5621] = 1
@@ -404,9 +409,12 @@ class Extractor(object):
         # CORRECTION FOR J1514-3250 --> IFU2 (sky) partly covered by PWFS2 probe
         # IFU2 is located at x offsets below about -800.
         # Will need to suppress the fiber transmission BEFORE binning.
+        # FBD: Turns out this can also help rescale the IFU2 fibers in cases where
+        # the flat field seems to have a different relative throughput than
+        # the science frames. This changes ever so slightly from night to night...
         #embed()
         if vignetting is not None:
-            print("    Correcting for vignetting={} (J1514-3250)...".format(vignetting))
+            print("    Modifying the IFU2 fibers to account for vignetting={} ...".format(vignetting))
             fcorr = vignetting # [tune this]
             ifu2_edge = -315 # pixels below this edge are from IFU2 [tune this]
             for i in range(nm):
@@ -797,7 +805,13 @@ class Extractor(object):
                 # Optimally-extracted flux is well-defined. Uniform extraction
                 # is not so clear. Variance is a bit tricky; we use the
                 # formula for VAR(f)/f in Table 1 of Horne (1986)
-                if optimal:
+                if method == "arc":
+                    extracted_flux[i,j] = model_amps
+                    extracted_var[i,j] = abs(
+                            extracted_flux[i,j] * astrotools.divide0(
+                                phi[:, ~xtr.mask].sum(axis=1),
+                                (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                elif optimal:
                     extracted_flux[i,j,:-1] = model_amps
                     #extracted_var[i, j] = abs(
                     #    extracted_flux[i, j] * astrotools.divide0(
