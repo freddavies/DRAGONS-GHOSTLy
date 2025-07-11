@@ -375,10 +375,11 @@ class Extractor(object):
         # more straightforward, this is just a hack for now to avoid making big changes
         # to the data structures.......
         # UPDATE: The "scattered light" is probably just dark current. Let's measure it directly?
-        data += slight
-        dc = np.median(data[25:75,100:-100][~lacos[1][25:75,100:-100]])
-        data -= dc
-        slight = 0*slight + dc
+#        if method == "new":
+#            data += slight
+#            dc = np.median(data[25:75,100:-100][~lacos[1][25:75,100:-100]])
+#            data -= dc
+#            slight = 0*slight + dc
         if method == "new":
             self.vararray = data + slight + self.rnoise
 
@@ -617,77 +618,82 @@ class Extractor(object):
         # So we can instead just use a bspline as before to measure the relative flat field difference.
 
         if method == "new":
-            print("\n    Computing fine correction on the flatfield from sky lines...", end="")
-            pn = np.array([])
-            px = np.array([])
-            pv = np.array([])
-            nlines = 0
-            if vignetting is None:
-                vignetting = 1.0
-            for i in range(nm):
-                xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
-                pixel_array, pixel_array_x, mask_array, x_ix_min = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
-                                                                                   profile_y_microns,
-                                                                                   matrices,self.slit_tilt,DQ.no_data)
-                pixel_array_y = np.copy(pixel_array)
-                pixel_array = np.copy(data[xmin:xmax+1,:].T)
-                slight_array = np.copy(slight[xmin:xmax+1,:].T)
-                pixel_array_norm = np.zeros_like(pixel_array)
-                flat_array = flat_model[i](pixel_array_x.flatten())[0].reshape(pixel_array.shape)
-                
-                skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
-                             flat_model,noise_model,lacos,slight_array)
-                             
-                amps,_,cens,wids,_,_,_,_ = pypeit_arc.detect_lines(skymodel(np.arange(ny,dtype=float))[0])
-                
-                keep = (amps > 20000*vignetting) & (wids < 4.0) & (cens > 1500) & (cens < ny-1500)
-                amps = amps[keep]
-                cens = cens[keep]
-                wids = wids[keep]
-                
-                noise_array = noise_model(pixel_array)
-                renorm = np.sum(pixel_array*(pixel_array_x != 0),axis=1).reshape(ny,1)
-                pixel_array_norm = pixel_array/renorm
-                noise_array /= renorm**2
-                good_pix = pixel_array_x != 0
-                pixel_array_norm[good_pix] /= flat_array[good_pix]
-                noise_array[good_pix] /= flat_array[good_pix]**2
-                
-                nlines += len(amps)
+        
+            do_fine_corr = True
+            if do_fine_corr:
+                print("\n    Computing fine correction on the flatfield from sky lines...", end="")
+                pn = np.array([])
+                px = np.array([])
+                pv = np.array([])
+                nlines = 0
+                if vignetting is None:
+                    vignetting = 1.0
+                for i in range(nm):
+                    xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
+                    pixel_array, pixel_array_x, mask_array, x_ix_min = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
+                                                                                       profile_y_microns,
+                                                                                       matrices,self.slit_tilt,DQ.no_data)
+                    pixel_array_y = np.copy(pixel_array)
+                    pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                    slight_array = np.copy(slight[xmin:xmax+1,:].T)
+                    pixel_array_norm = np.zeros_like(pixel_array)
+                    flat_array = flat_model[i](pixel_array_x.flatten())[0].reshape(pixel_array.shape)
+                    
+                    skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
+                                 flat_model,noise_model,lacos,slight_array)
+                                 
+                    amps,_,cens,wids,_,_,_,_ = pypeit_arc.detect_lines(skymodel(np.arange(ny,dtype=float))[0])
+                    
+                    keep = (amps > 22000*vignetting) & (wids < 4.0) & (cens > 1250) & (cens < ny-1250)
+                    amps = amps[keep]
+                    cens = cens[keep]
+                    wids = wids[keep]
+                    
+                    noise_array = noise_model(pixel_array)
+                    renorm = np.sum(pixel_array*(pixel_array_x != 0),axis=1).reshape(ny,1)
+                    pixel_array_norm = pixel_array/renorm
+                    noise_array /= renorm**2
+                    good_pix = pixel_array_x != 0
+                    pixel_array_norm[good_pix] /= flat_array[good_pix]
+                    noise_array[good_pix] /= flat_array[good_pix]**2
+                    
+                    nlines += len(amps)
 
-                for line in range(len(amps)):
-                    lo = int(cens[line]-1.5*wids[line])
-                    hi = int(cens[line]+1.5*wids[line])
-                    renorm = np.sum(pixel_array*(pixel_array_x != 0),axis=1)
-                    #pixel_array[lo:hi+1,:] -= 0.5*(pixel_array[lo-1,:]+pixel_array[hi+1,:]) # subtract object on average?
-                    px = np.append(pixel_array_x[lo:hi+1,:].flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],px)
-                    pn = np.append(pixel_array_norm[lo:hi+1,:].flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],pn)
-                    pv = np.append((1/noise_array[lo:hi+1,:]).flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],pv)
+                    for line in range(len(amps)):
+                        lo = int(cens[line]-1.0*wids[line])
+                        hi = int(cens[line]+1.0*wids[line])
+                        renorm = np.sum(pixel_array*(pixel_array_x != 0),axis=1)
+                        #pixel_array[lo:hi+1,:] -= 0.5*(pixel_array[lo-1,:]+pixel_array[hi+1,:]) # subtract object on average?
+                        px = np.append(pixel_array_x[lo:hi+1,:].flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],px)
+                        pn = np.append(pixel_array_norm[lo:hi+1,:].flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],pn)
+                        pv = np.append((1/noise_array[lo:hi+1,:]).flatten()[(pixel_array_x[lo:hi+1].flatten() != 0)],pv)
 
-            print(f"{nlines} modeled.")
-            
-            debug_fine_corr = True
-            
-            if nlines < 3:
-                fine_corr = None
-                print("\n    Insufficient lines detected for fine correction (check vignetting of IFU2)")
+                print(f"{nlines} modeled.")
+                
+                debug_fine_corr = False
+                
+                if nlines < 8:
+                    fine_corr = None
+                    print("\n    Insufficient lines detected for fine correction (check vignetting of IFU2)")
+                else:
+                    sort = np.argsort(px)
+
+                    sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(px[sort],pn[sort],pv[sort],np.ones(1*len(px)),
+                                                                 ingpm=np.ones_like(px).astype(bool),kwargs_bspline={'bkspace':220},
+                                                                 kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+                                                                 quiet=True)
+                    
+                    fine_corr = sset.value
+                    
+                    if debug_fine_corr:
+                        plt.title(f"fine correction from {nlines} lines")
+                        plt.scatter(px,pn,c='k',s=0.1)
+                        plt.scatter(px[sort],yfit,c='r',s=0.2)
+                        plt.ylim(-0.05,1.5)
+                        plt.show()
             else:
-                sort = np.argsort(px)
-
-                sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(px[sort],pn[sort],pv[sort],np.ones(1*len(px)),
-                                                             ingpm=np.ones_like(px).astype(bool),kwargs_bspline={'bkspace':200},
-                                                             kwargs_reject={'groupbadpix':True, 'maxrej': 10},
-                                                             quiet=True)
+                fine_corr = None
                 
-                fine_corr = sset.value
-                
-                if debug_fine_corr:
-                    plt.title(f"fine correction from {nlines} lines")
-                    plt.scatter(px,pn,c='k',s=0.1)
-                    plt.scatter(px[sort],yfit,c='r',s=0.2)
-                    plt.ylim(-0.05,1.5)
-                    plt.show()
-            
         #embed()
 
                 
@@ -720,7 +726,8 @@ class Extractor(object):
                 
                 # Get bspline sky model
                 skyfit, _ = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
-                                             flat_model,noise_model,lacos,slight_array,fine_corr=fine_corr)
+                                             flat_model,noise_model,lacos,slight_array,
+                                             fine_corr=fine_corr,bkspace=1.11)
                                              
                 # Now prepare the data for a bspline fit
                 xdata = np.copy(pixel_array_x.flatten())
@@ -729,7 +736,7 @@ class Extractor(object):
                 fit_mask = (pixel_array_x.flatten() != 0) & (mask_array.flatten() == 0)
                 
                 # "Renormalize" assuming small variations in flux with wavelength
-                invvar = 1/noise_model(pixel_array)
+                invvar = 1/noise_model(pixel_array+slight_array)
                 skysub = pixel_array-skyfit
                 renorm = np.atleast_2d(np.sum(skysub*fit_mask.reshape(pixel_array.shape),axis=1)).T+1
                 skysub = skysub/renorm
@@ -758,6 +765,8 @@ class Extractor(object):
                                 
             obj_model = sset.value
             #obj_profile_qa = [np.copy(xdata),np.copy(yfit)]
+            
+            #embed()
                 
             # OLD SLOW PROFILE FITTING METHOD
 #
@@ -878,7 +887,8 @@ class Extractor(object):
                             
             if sky_spline:
                 skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
-                                         flat_model,noise_model,lacos,slight_array,fine_corr = fine_corr)
+                                         flat_model,noise_model,lacos,slight_array,
+                                         fine_corr = fine_corr, bkspace = 1.2)
                 pixel_array -= skyfit
 
             #embed()
@@ -1049,19 +1059,24 @@ class Extractor(object):
                     xval = pixel_array_x[paint]
                     pixel_array_model[paint] = extracted_flux[i][j,0]*obj_model(xval)[0]+skyresid[j]*flat_model[i](xval)[0]
                 pixel_array_model *= pixel_array_x != 0
-                fig,ax = plt.subplots(2,2,figsize=(20,8))
-                ax[0][0].imshow((pixel_array+skyfit+slight_array).T,vmin=-10,vmax=100,interpolation='none')
-                ax[0][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T),#/np.sqrt(noise_model(pixel_array.T))
-                             aspect=1,interpolation='none',vmin=-10,vmax=100)#,cmap='RdBu_r')
-                ax[1][0].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array_model.T+skyfit.T),
-                             vmin=-10,vmax=100,interpolation='none')
-                ax[1][1].imshow(~lacos[1][xmin:xmax+1,:]*(pixel_array.T-pixel_array_model.T)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array).T),
+                fig,ax = plt.subplots(1,4,figsize=(8,8))
+                ax[0].imshow((pixel_array+skyfit+slight_array)*(pixel_array_x!=0),vmin=-8,vmax=40,interpolation='none',cmap='bone_r')
+                ax[0].set_title('sci')
+                ax[1].imshow(~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0),#/np.sqrt(noise_model(pixel_array.T))
+                             aspect=1,interpolation='none',vmin=-8,vmax=40,cmap='bone_r')#,cmap='RdBu_r')
+                ax[1].set_title('sci-sky-obj')
+                ax[2].imshow(~lacos[1][xmin:xmax+1,:].T*(pixel_array_model+skyfit)*(pixel_array_x!=0),
+                             vmin=-8,vmax=40,interpolation='none',cmap='bone_r')
+                ax[2].set_title('sky+obj')
+                ax[3].imshow(~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array)),
                              aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r')
+                ax[3].set_title('(sci-sky-obj)/std')
                 for x in ax.flatten():
-                    x.set_xlim(0,200)
+                    x.set_ylim(700,900)
+                fig.suptitle(f"order {self.arm.m_min+i}")
                 plt.tight_layout()
                 plt.show()
-                embed()
+                #embed()
         print("\n")
         
         #embed()
@@ -1515,7 +1530,7 @@ def get_spatial_profiles(nord,bins,nspl,ny,po,px,py,pn):
 
 
 def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_profile,noise_model,lacos,slight_array,
-                     prof_min=0.25, obj_cut=True, debug=False, fine_corr = None):
+                     prof_min=0.25, obj_cut=True, debug=False, fine_corr=None, bkspace=1.1):
     # Experimental sky subtraction stuff
     
     # Compute the flat profile everywhere
@@ -1547,9 +1562,27 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
     mask = mask[isrt]
 
     sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
-                                                      ingpm=mask,kwargs_bspline={'bkspace':1.1},
+                                                      ingpm=mask,kwargs_bspline={'bkspace':bkspace},nord=3,
                                                       kwargs_reject={'groupbadpix':True, 'maxrej': 10},
                                                       quiet = True)
+                                                      
+    # We now have the first iteration of sky subtraction, but it is likely biased due to Poisson noise in the pixel array
+    # Let's redo the variances to deal with this
+    invvar = ((profile.flatten()[isrt]**2)/noise_model(yfit*profile.flatten()[isrt]+slight_array.flatten()[isrt]))
+    
+    sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+                                                  ingpm=mask,kwargs_bspline={'bkspace':bkspace},nord=3,
+                                                  kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+                                                  quiet = True)
+                                                  
+    # One more round? Or is that too greedy?
+    invvar = ((profile.flatten()[isrt]**2)/noise_model(yfit*profile.flatten()[isrt]+slight_array.flatten()[isrt]))
+    
+    sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+                                                  ingpm=mask,kwargs_bspline={'bkspace':bkspace},nord=3,
+                                                  kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+                                                  quiet = True)
+
 
     # Unsort everything for inspection
     xdata = xdata[isrt2]
