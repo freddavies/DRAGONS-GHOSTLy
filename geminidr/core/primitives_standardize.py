@@ -20,7 +20,6 @@ from recipe_system.utils.md5 import md5sum
 from recipe_system.utils.decorators import parameter_override, capture_provenance
 from recipe_system import __version__ as rs_version
 
-
 from . import parameters_standardize
 
 # ------------------------------------------------------------------------------

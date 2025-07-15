@@ -1220,7 +1220,8 @@ class GHOSTSpect(GHOST):
         apply_centroids = params["apply_centroids"]
         timing = params["debug_timing"]
         vignetting = params["vignetting"]
-
+        nspl = params["nspl"]
+        
         # This check is to head off problems where the same flat is used for
         # multiple ADs and gets binned but then needs to be rebinned (which
         # isn't possible because the unbinned flat has been overwritten)
@@ -1459,7 +1460,10 @@ class GHOSTSpect(GHOST):
                     correction = 1. / binned_blaze
                     
             # Pass through scattered light if it exists
-            slight = ad[0].variance.copy()
+            if np.mean(ad[0].variance) < 10:
+                slight = ad[0].variance.copy()
+            else:
+                slight = np.zeros_like(ad[0].variance)
                     
             for i, (o, s, cr) in enumerate(zip(objs_to_use, use_sky, find_crs)):
                 if o:
@@ -1480,7 +1484,7 @@ class GHOSTSpect(GHOST):
                     min_flux_frac=min_flux_frac, timing=timing,
                     flat=flat, method = extract_method,
                     vignetting=vignetting, arm_flat=arm_flat,
-                    slight=slight
+                    slight=slight, nspl_obj = nspl
                 )
 
                 # Flag pixels with VAR=0 that don't already have a flag
@@ -1938,9 +1942,12 @@ class GHOSTSpect(GHOST):
                     if avoidance >= ybin:
                         x_ix = np.r_[x_ix, np.arange(x_ix.min() - avoidance // ybin, x_ix.min()),
                                      np.arange(x_ix.max()+1, x_ix.max() + avoidance // ybin)]
-                        x_ix = np.minimum(np.maximum(x_ix, 0), nx-1)
+                    x_ix = np.minimum(np.maximum(x_ix, 0), nx-1)
                     _slice = (j, x_ix) if extractor.transpose else (x_ix, j)
-                    unilluminated[_slice] = False
+                    try:
+                        unilluminated[_slice] = False
+                    except:
+                        embed()
             print("\n")
 
             # Mark all pixels outside the topmost/bottommost orders as
@@ -1959,7 +1966,7 @@ class GHOSTSpect(GHOST):
             # Mask cosmic rays
             # ONLY RUN ON SCIENCE FRAMES, NOT FLAT/ARC
             if 'FLAT' not in ad.tags:
-                lacos = lacosmic.lacosmic(ad[0].data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
+                lacos = lacosmic.lacosmic(ad[0].data,5.0,4.5,1.5,error=np.sqrt(ad[0].variance),mask=(ad[0].variance<=0))
                 ad[0].mask = ad[0].mask + lacos[1]
 
             interp_points = []
@@ -1999,6 +2006,7 @@ class GHOSTSpect(GHOST):
 
             gt.mark_history(ad, primname=self.myself(), keyword=timestamp_key)
             ad.update_filename(suffix=params["suffix"], strip=True)
+            
         return adinputs
 
     def scaleCountsToReference(self, adinputs=None, **params):

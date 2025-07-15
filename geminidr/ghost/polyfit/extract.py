@@ -11,6 +11,7 @@ from astropy.stats import sigma_clip
 import matplotlib.cm as cm
 import warnings
 from scipy.interpolate import CubicSpline, RegularGridInterpolator, RectBivariateSpline
+from scipy.signal import medfilt
 from datetime import datetime
 
 from gempy.library import astrotools, matching
@@ -255,13 +256,13 @@ class Extractor(object):
         return pixel_model
 
     def new_extract(self, data=None, correct_for_sky=True, use_sky=True,
-                    optimal=False, find_crs=True, snoise=0.1, sigma=6,
+                    optimal=False, find_crs=True, snoise=0.1, sigma=4.5,
                     used_objects=[0, 1], debug_pixel=None,
                     apply_centroids=False, correction=None, ftol=0.001,
                     min_flux_frac=0, timing=False,
                     flat=None, method="old",
                     vignetting=None, arm_flat=None,
-                    nspl_flat=7, nspl_obj=4,
+                    nspl_flat=5, nspl_obj=3,
                     slight=None, sky_spline=True):
         """
         Do a complete extraction of all objects from the echellogram.
@@ -361,26 +362,20 @@ class Extractor(object):
                              n_slitpix / 2 + 0.5) * self.slitview.microns_pix
 
 
-        # FBD: TODO: Make the LACosmic parameters binning-dependent!
-        #      These numbers are tuned for 1x8 binning.
-        # TODO: FIX THE GAIN/READNOISE, THOSE ASSUME COUNTS, CAN PUT IN ERROR ARRAY INSTEAD?
-        if method == "new":
-            lacos = lacosmic.lacosmic(data,6,7,1.5,effective_gain=0.5,readnoise=2.1)
-            self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
-                                              DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
-        
         # If we have subtracted off the scattered light, it is stored in the vararray
         # So we need to reconstruct the vararray using the data and detector parameters
         # Ideally in the future we will make loading in the scattered light model
         # more straightforward, this is just a hack for now to avoid making big changes
         # to the data structures.......
         # UPDATE: The "scattered light" is probably just dark current. Let's measure it directly?
+        # UPDATE2: Let's use the scattered light thing for now, but calibrate with real darks later...
 #        if method == "new":
 #            data += slight
 #            dc = np.median(data[25:75,100:-100][~lacos[1][25:75,100:-100]])
 #            data -= dc
 #            slight = 0*slight + dc
-        if method == "new":
+        if method == "new" and np.mean(slight) > 0:
+            print("    Recomputing variance array")
             self.vararray = data + slight + self.rnoise
 
         m_init = models.Polynomial1D(degree=1)
@@ -393,24 +388,44 @@ class Extractor(object):
             m_noise.c0 = 4  # just something for now
             m_noise.c1 = 1
         noise_model = lambda x: m_noise.c0 + m_noise.c1 * np.maximum(x,0)
+        c0, c1 = m_noise.parameters
 
         pixel_inv_var = 1. / self.vararray
+        
+        
+        #embed()
         
         # FBD: The existing GHOST BPM is missing some long-term bad pixel features
         # However, from night to night, there are occasionally other vertical features
         # Should probably figure out if there is a way to find those automatically,
         # otherwise they have to be added here by hand.
-        if method == "new":
-            extra_bpm = np.zeros_like(data)
+        extra_bpm = np.zeros_like(data)
+        if method == "new" and self.arm.arm == "red":
             extra_bpm[:384,1410:1413] = 1
             #extra_bpm[:300,2820] = 1 # This was a transitory bad column in one of the 2024B exposures
             extra_bpm[291:386,5029] = 1
             extra_bpm[385:,5062:5064] = 1
             extra_bpm[386:,5619:5621] = 1
             self.badpixmask |= extra_bpm.astype(bool) * DQ.fail
+        # TODO: Add the blue bpm!
+        if self.arm.arm == "blue":
+            extra_bpm[data < -20] = 1
+            self.badpixmask |= extra_bpm.astype(bool) * DQ.fail
+        
+        #embed()
+            
+        # FBD: TODO: Make the LACosmic parameters binning-dependent!
+        #      These numbers are tuned for 1x8 binning.
+        # UPDATE: Parameters re-tuned. It is possible that they are too aggressive -- double-check this if things look weird.
+        if method == "new":
+            lacos = lacosmic.lacosmic(data,6.0,sigma,1.5,error=np.sqrt(noise_model(data)),mask=extra_bpm.astype(bool))
+            self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
+                                              DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
+            
+        
         
         # Get a copy of the flat
-        flat_data = np.copy(flat.data[0])
+        flat_data = np.copy(flat.data[0]).astype(np.float64)
 
 
         # CORRECTION FOR J1514-3250 --> IFU2 (sky) partly covered by PWFS2 probe
@@ -488,9 +503,9 @@ class Extractor(object):
         
         print("    Determining flat profile from all orders ", end="")
         flat_model = [None for i in range(nm)]
-        profile_qa = [None for i in range(nm)]
         for i in range(nm):
             print(f"{self.arm.m_min+i}...", end="")
+            sys.stdout.flush()
             xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
 
             pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
@@ -526,6 +541,18 @@ class Extractor(object):
             ydata = ydata[isrt]
             invvar = invvar[isrt]
             fit_mask = fit_mask[isrt]
+ #           pix = pixel_array_y.flatten()[isrt]
+            
+            
+#            flat_models[i] = [None for ii in range(nspl_flat)]
+#            for ii in range(nspl_flat):
+#                use_mask = (pix > (ii-0.5)*ny/(2*(nspl_flat-1))) & (pix < (ii+0.5)*ny/(2*(nspl_flat-1)))
+#                use_mask = use_mask | (pix > (2*(nspl_flat-1)-ii-0.5)*ny/(2*(nspl_flat-1))) & (pix < (2*(nspl_flat-1)-ii+0.5)*ny/(2*(nspl_flat-1)))
+#                sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata[use_mask],ydata[use_mask],invvar[use_mask],np.ones(1*len(xdata[use_mask])),
+#                                                     ingpm=np.ones_like(xdata[use_mask]).astype(bool),kwargs_bspline={'bkspace':50},
+#                                                     kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+#                                                     quiet=True)
+#                flat_models[ii] = sset.value
 
             sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
                                                                  ingpm=fit_mask,kwargs_bspline={'bkspace':50},
@@ -533,7 +560,6 @@ class Extractor(object):
                                                                  quiet=True)
                                 
             flat_model[i] = sset.value
-            #flat_profile_qa[i] = [np.copy(xdata),np.copy(yfit)]
                     
         if method == "arc" or method == "flat":
             sky_spline = False
@@ -618,7 +644,7 @@ class Extractor(object):
         # So we can instead just use a bspline as before to measure the relative flat field difference.
 
         if method == "new":
-        
+            # Make this a parameter at some point.
             do_fine_corr = True
             if do_fine_corr:
                 print("\n    Computing fine correction on the flatfield from sky lines...", end="")
@@ -640,7 +666,7 @@ class Extractor(object):
                     flat_array = flat_model[i](pixel_array_x.flatten())[0].reshape(pixel_array.shape)
                     
                     skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
-                                 flat_model,noise_model,lacos,slight_array)
+                                 flat_model,noise_model,lacos,slight_array,arm=self.arm.arm)
                                  
                     amps,_,cens,wids,_,_,_,_ = pypeit_arc.detect_lines(skymodel(np.arange(ny,dtype=float))[0])
                     
@@ -698,13 +724,17 @@ class Extractor(object):
 
                 
         if method == "new": # don't need to do this for arc/flat
-            good_orders = [4,5,6,7,8,9,10,11,12] # This ranges from ~9000A to zlya~5.3,
+            if self.arm.arm == "red":
+                good_orders = [4,5,6,7,8,9,10,11,12] # This ranges from ~9000A to zlya~5.3,
+            else: # self.arm.arm == "blue"
+                good_orders = [1,2,3,4,5,6]
                             # orders which should have a lot of flux in GHOSTLy
             print("\n    Determining object profile from good order indices "+str(good_orders[0])+" to "+str(good_orders[-1]))
             # Now grab all the pixels corresponding to the profiles
             px = np.array([])
             py = np.array([])
             pv = np.array([])
+            pj = np.array([])
             
             for i in good_orders:
                 xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
@@ -714,12 +744,12 @@ class Extractor(object):
                                                                                    matrices,self.slit_tilt,DQ.no_data)
                 pixel_array_y = np.copy(pixel_array)
                 slight_array = np.zeros_like(pixel_array)
-
-                pixel_array = np.copy(data[xmin:xmax+1,:].T)
-                slight_array = np.copy(slight[xmin:xmax+1,:].T)
                 mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
                 for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
                     mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+                    
+                pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                slight_array = np.copy(slight[xmin:xmax+1,:].T)
 
                 pixel_array_norm = np.zeros_like(pixel_array)
                 good_pix = (pixel_array_y != 0) & (mask_array == 0)
@@ -727,13 +757,18 @@ class Extractor(object):
                 # Get bspline sky model
                 skyfit, _ = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                              flat_model,noise_model,lacos,slight_array,
-                                             fine_corr=fine_corr,bkspace=1.11)
+                                             fine_corr=fine_corr,arm=self.arm.arm)
                                              
                 # Now prepare the data for a bspline fit
                 xdata = np.copy(pixel_array_x.flatten())
                 
                 # Choose which pixels to use in the fit
-                fit_mask = (pixel_array_x.flatten() != 0) & (mask_array.flatten() == 0)
+                fit_mask = (pixel_array_x != 0) & (mask_array == 0)
+                if self.arm.arm == "blue":
+                    skynorm = np.sum(skyfit*fit_mask,axis=1)
+                    totnorm = np.sum(pixel_array*(~lacos[1][xmin:xmax+1,:].T)*fit_mask,axis=1)
+                    fit_mask *= np.atleast_2d((totnorm/medfilt(skynorm,11) > 1.5)).T
+                fit_mask = fit_mask.flatten()
                 
                 # "Renormalize" assuming small variations in flux with wavelength
                 invvar = 1/noise_model(pixel_array+slight_array)
@@ -749,7 +784,7 @@ class Extractor(object):
                 px = np.append(xdata[fit_mask],px)
                 py = np.append(ydata[fit_mask],py)
                 pv = np.append(invvar[fit_mask],pv)
-
+                pj = np.append(pixel_array_y.flatten()[fit_mask],pj)
 
             # bspline needs everything to be sorted in order of spectral pixel
             isrt = np.argsort(px)
@@ -757,16 +792,63 @@ class Extractor(object):
             xdata = px[isrt]
             ydata = py[isrt]
             invvar = pv[isrt]
+            pix = pj[isrt]
 
-            sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
-                                                                 ingpm=np.ones_like(xdata).astype(bool),kwargs_bspline={'bkspace':50},
-                                                                 kwargs_reject={'groupbadpix':True, 'maxrej': 10},
-                                                                 quiet=True)
-                                
-            obj_model = sset.value
+            # The object model varies with wavelength -- let's fit a series of bsplines,
+            # and then make an interpolation function between them
+            nsplit = nspl_obj # centered on 0, 1/4, 1/2, 3/4, 1, using the fact that the profile is symmetric about the center
+            if self.arm.arm == "blue":
+                nsplit = 1
+            obj_models = [None for ii in range(nsplit)]
+            if nsplit > 1:
+                for ii in range(nsplit):
+                    use_mask = (pix > (ii-0.5)*ny/(2*(nsplit-1))) & (pix < (ii+0.5)*ny/(2*(nsplit-1)))
+                    use_mask = use_mask | (pix > (2*(nsplit-1)-ii-0.5)*ny/(2*(nsplit-1))) & (pix < (2*(nsplit-1)-ii+0.5)*ny/(2*(nsplit-1)))
+                    sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata[use_mask],ydata[use_mask],invvar[use_mask],np.ones(1*len(xdata[use_mask])),
+                                                         ingpm=np.ones_like(xdata[use_mask]).astype(bool),kwargs_bspline={'bkspace':50},
+                                                         kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+                                                         quiet=True)
+                    obj_models[ii] = sset.value
+            else:
+                sset, _, yfit, _, _ = pypeit_fitting.bspline_profile(xdata,ydata,invvar,np.ones(1*len(xdata)),
+                                                                     ingpm=np.ones_like(xdata).astype(bool),kwargs_bspline={'bkspace':50},
+                                                                     kwargs_reject={'groupbadpix':True, 'maxrej': 10},
+                                                                     quiet=True)
+                obj_models[0] = sset.value
             #obj_profile_qa = [np.copy(xdata),np.copy(yfit)]
             
-            #embed()
+            # cool plot to check how profile looks
+            debug_obj_profile = False
+            if debug_obj_profile:
+            
+                nbins = 30
+                hist,X,Y = np.histogram2d(px/(px.max()-px.min()),pj/(pj.max()-pj.min()),weights=py,bins=nbins)
+                norm,_,_ = np.histogram2d(px/(px.max()-px.min()),pj/(pj.max()-pj.min()),bins=nbins)
+                
+                objmod = np.zeros((nbins,nbins))
+                X = np.linspace(px.min(),px.max(),nbins)
+                Y = np.linspace(pj.min(),pj.max(),nbins)
+                if nsplit > 1:
+                    for ii in range(len(Y)):
+                        ind = int(np.round((nsplit-1)-np.abs((Y[ii]-0.5*ny)/(ny/(2*(nsplit-1))))))
+                        dif = ((nsplit-1)-np.abs((Y[ii]-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
+                        objmod1 = obj_models[ind](X)[0]
+                        objmod2 = obj_models[ind+int(np.sign(dif))](X)[0]
+                        objmod[:,ii] = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif) #obj_models[ind](X)[0]
+                else:
+                    for ii in range(len(Y)):
+                        objmod[:,ii] = obj_models[0](X)[0]
+                
+                plt.imshow(hist/norm,origin='lower',cmap='Spectral_r',vmax=0.32,vmin=0)
+                plt.contour(hist/norm,origin='lower',colors='k',levels=np.linspace(0,0.35,12),linewidths=1)
+                plt.contour(objmod,origin='lower',colors='white',levels=np.linspace(0,0.35,12),linewidths=1)
+                plt.show()
+                
+                for ii in range(nsplit):
+                    plt.plot(X,obj_models[ii](X)[0])
+                plt.show()
+                
+        #embed()
                 
             # OLD SLOW PROFILE FITTING METHOD
 #
@@ -839,7 +921,9 @@ class Extractor(object):
 #            obj_profile = RectBivariateSpline(ycen,cens,profs)
             
         print("\n\n    Extracting order ", end="")
-        c0, c1 = m_noise.parameters
+        
+        #embed()
+        
         for i in range(nm):
             print(f"{self.arm.m_min+i}...", end="")
             sys.stdout.flush()
@@ -888,12 +972,56 @@ class Extractor(object):
             if sky_spline:
                 skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
                                          flat_model,noise_model,lacos,slight_array,
-                                         fine_corr = fine_corr, bkspace = 1.2)
+                                         fine_corr=fine_corr, arm=self.arm.arm)
                 pixel_array -= skyfit
 
             #embed()
 
             skyresid = np.zeros(ny)
+            
+            if method == "new":
+                use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x)
+            else:
+                use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=False)
+                
+            use_masks = use_masks.astype(bool)
+            
+            # Calculate object profile array
+            obj_prof = np.zeros_like(pixel_array.flatten())
+            Y = pixel_array_y.flatten()
+            X = pixel_array_x.flatten()
+            if nsplit > 1:
+                ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
+                dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
+                objmod1 = np.zeros_like(X)
+                objmod2 = np.zeros_like(X)
+                for ii in range(nsplit):
+                    mask = ind == ii
+                    objmod1[mask] = obj_models[ii](X[mask])[0]
+                for ii in range(nsplit):
+                    mask = ind+np.sign(dif).astype(int) == ii
+                    objmod2[mask] = obj_models[ii](X[mask])[0]
+                obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
+            else:
+                obj_prof = obj_models[0](X)[0]
+            obj_prof = obj_prof.reshape(pixel_array.shape)
+            
+            # Calculate object profile array
+            #flat_prof = np.zeros(pixel_array.flatten())
+            #Y = pixel_array_y.flatten()
+            #X = pixel_array_x.flatten()
+            #ind = np.round((nspl_flat-1)-np.abs((Y-0.5*ny)/(ny/(2*(nspl_flat-1))))).astype(int)
+            #dif = ((nspl_flat-1)-np.abs((Y-0.5*ny)/(ny/(2*(nspl_flat-1)))))-ind
+            #fltmod1 = np.zeros_like(X)
+            #fltmod2 = np.zeros_like(X)
+            #for ii in range(nsplit):
+            #    mask = ind == ii
+            #    fltmod1[mask] = flat_models[ii](X[mask])[0]
+            #for ii in range(nsplit):
+            #    mask = ind+np.sign(dif).astype(int) == ii
+            #    fltmod2[mask] = flat_models[ii](X[mask])[0]
+            #flat_prof = fltmod1*(1-np.abs(dif))+fltmod2*np.abs(dif)
+            #flat_prof = flat_prof.reshape(pixel_array.shape)
 
             for j in range(ny):
                 debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
@@ -919,19 +1047,19 @@ class Extractor(object):
                 # We *also* need to evaluate the sky profile shape, too.
                 # This might be a bit more of a challenge, but we can try to
                 # stick to the usual one for now.
-                use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-                if method == "new": # Extra mask to deal with weird stuff at edge
-                    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+                #use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+                #if method == "new": # Extra mask to deal with weird stuff at edge
+                #    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+                use_mask = use_masks[j]
                 xval = pixel_array_x[use_mask]
                 if method == "new":
                     phi_sky = flat_model[i](xval)[0]
-                    phi_obj = obj_model(xval)[0]
-                    phi_obj[xval < 0] = 0.0 # these pixels should be sky
-                    
-                    #if sky_spline:
-                    #    phi = np.array([phi_obj])
-                    #else:
-                    phi = np.array([phi_obj])#,phi_sky])
+                    phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
+                    if self.arm.arm == "red":
+                        phi_obj[xval < 0] = 0.0 # these pixels should be sky
+                    else: # self.arm.arm == "blue"
+                        phi_obj[xval > 0] = 0.0 # these pixels should be sky
+                    phi = np.array([phi_obj])
                 else:
                     phi_all = flat_model[i](xval)[0]
                     phi = np.array([phi_all])
@@ -958,13 +1086,13 @@ class Extractor(object):
                 frac = astrotools.divide0(phi_scaled, sum_models)
                 frac[:, xtr.mask] = 0
                 
-                # FBD: Clean up the remaining cosmic rays Horne 1986 style
+                # FBD: Clean up remaining cosmic rays Horne 1986 style
                 # by running one extra iteration of the fit.
-                if i > 0 and method == "new":
+                if sigma > 6:
                     clip = 8.0 # Sigma clip for Horne masking. Has to be fairly weak because profiles are inaccurate.
                     diff2 = (pixel_array[use_mask]-sum_models)**2
                     var = col_var
-                    bad_pix = (diff2 > var*clip**2)
+                    bad_pix = (diff2 > var*(clip**2))
                     #print(bad_pix)
                     if np.sum(bad_pix) > 0:
                         xtr = Extractum(phi, pixel_array[use_mask],
@@ -1057,7 +1185,7 @@ class Extractor(object):
                 for j in range(ny):
                     paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
                     xval = pixel_array_x[paint]
-                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_model(xval)[0]+skyresid[j]*flat_model[i](xval)[0]
+                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]+skyresid[j]*flat_model[i](xval)[0]
                 pixel_array_model *= pixel_array_x != 0
                 fig,ax = plt.subplots(1,4,figsize=(8,8))
                 ax[0].imshow((pixel_array+skyfit+slight_array)*(pixel_array_x!=0),vmin=-8,vmax=40,interpolation='none',cmap='bone_r')
@@ -1475,6 +1603,11 @@ def get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices):
         slit_center = x_map[i, j] + nx // 2
         x_ix = get_slit_profile_edges(profile_y_microns,slit_center,
                                       detpix_microns=matrices[i,j,0,0])
+                                      
+        # Deal with edge effects...
+        on_array = np.logical_and(x_ix >=0, x_ix < nx)
+        x_ix = x_ix[on_array]
+        
         if j == 0:
             limits = (x_ix[0], x_ix[-1])
         elif x_ix.min() < limits[0]:
@@ -1498,6 +1631,7 @@ def get_pixel_array(i,x_map,nx,ny,xmin,xmax,profile_y_microns,matrices,slit_tilt
                                       detpix_microns=matrices[i,j,0,0])
         # Deal with edge effects...
         on_array = np.logical_and(x_ix >=0, x_ix < nx)
+        x_ix = x_ix[on_array]
         
         # Calculate extraction location for each spatial pixel by
         # including contributions from non-collinear slit and slit tilt
@@ -1508,7 +1642,7 @@ def get_pixel_array(i,x_map,nx,ny,xmin,xmax,profile_y_microns,matrices,slit_tilt
         #except:
         #    embed()
         pixel_array_x[j,x_ix[0]-xmin:x_ix[-1]-xmin+1] = (x_ix-slit_center)*matrices[i,j,0,0]
-        mask_array[j, x_ix[0]-xmin:x_ix[-1]-xmin+1] |= ((~on_array) * DQnodata)
+        #mask_array[j, x_ix[0]-xmin:x_ix[-1]-xmin+1] |= ((~on_array) * DQnodata)
         x_ix_min[j] = x_ix[0]-xmin
     
     return pixel_array, pixel_array_x, mask_array, x_ix_min
@@ -1530,7 +1664,7 @@ def get_spatial_profiles(nord,bins,nspl,ny,po,px,py,pn):
 
 
 def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_profile,noise_model,lacos,slight_array,
-                     prof_min=0.25, obj_cut=True, debug=False, fine_corr=None, bkspace=1.1):
+                     prof_min=0.25, obj_cut=True, debug=False, fine_corr=None, bkspace=1.2, arm="red"):
     # Experimental sky subtraction stuff
     
     # Compute the flat profile everywhere
@@ -1542,7 +1676,10 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
     cr_mask = ~lacos[1][xmin:xmax+1,:].T.flatten()
     mask = cr_mask & (pixel_array_x.flatten() != 0) & (profile > prof_min*profile.max())
     if obj_cut:
-        mask = mask & (pixel_array_x.flatten() < 100)
+        if arm == "red":
+            mask = mask & (pixel_array_x.flatten() < 50)
+        else: # arm == "blue"
+            mask = mask & (pixel_array_x.flatten() > -50)
 
     # Now prepare the data for a bspline fit
     xdata = np.copy(pixel_array_y.flatten())
@@ -1605,3 +1742,13 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
 
     return yfit.reshape(pixel_array.shape), sset.value
 
+@njit
+def get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=True):
+    use_mask = np.zeros((ny,pixel_array_y.shape[0],pixel_array_y.shape[1]))
+    for j in range(ny):
+        if clip_edges:
+            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+        else: # Extra mask to deal with weird stuff at edge
+            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+    return use_mask
+    
