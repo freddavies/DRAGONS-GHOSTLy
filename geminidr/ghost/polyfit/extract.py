@@ -670,7 +670,7 @@ class Extractor(object):
                                  
                     amps,_,cens,wids,_,_,_,_ = pypeit_arc.detect_lines(skymodel(np.arange(ny,dtype=float))[0])
                     
-                    keep = (amps > 22000*vignetting) & (wids < 4.0) & (cens > 1250) & (cens < ny-1250)
+                    keep = (amps > 22000*vignetting) & (wids < 4.0) & (cens > 1000) & (cens < ny-1000)
                     amps = amps[keep]
                     cens = cens[keep]
                     wids = wids[keep]
@@ -725,7 +725,7 @@ class Extractor(object):
                 
         if method == "new": # don't need to do this for arc/flat
             if self.arm.arm == "red":
-                good_orders = [4,5,6,7,8,9,10,11,12] # This ranges from ~9000A to zlya~5.3,
+                good_orders = [4,5,6,7,8,9,10,11,12,13,14]
             else: # self.arm.arm == "blue"
                 good_orders = [1,2,3,4,5,6]
                             # orders which should have a lot of flux in GHOSTLy
@@ -821,7 +821,7 @@ class Extractor(object):
             debug_obj_profile = False
             if debug_obj_profile:
             
-                nbins = 30
+                nbins = 64
                 hist,X,Y = np.histogram2d(px/(px.max()-px.min()),pj/(pj.max()-pj.min()),weights=py,bins=nbins)
                 norm,_,_ = np.histogram2d(px/(px.max()-px.min()),pj/(pj.max()-pj.min()),bins=nbins)
                 
@@ -979,32 +979,33 @@ class Extractor(object):
 
             skyresid = np.zeros(ny)
             
-            if method == "new":
-                use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x)
-            else:
-                use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=False)
-                
-            use_masks = use_masks.astype(bool)
+            #if method == "new":
+            #    use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x)
+            #else:
+            #    use_masks = get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=False)
+            #
+            #use_masks = use_masks.astype(bool)
             
             # Calculate object profile array
-            obj_prof = np.zeros_like(pixel_array.flatten())
-            Y = pixel_array_y.flatten()
-            X = pixel_array_x.flatten()
-            if nsplit > 1:
-                ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
-                dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
-                objmod1 = np.zeros_like(X)
-                objmod2 = np.zeros_like(X)
-                for ii in range(nsplit):
-                    mask = ind == ii
-                    objmod1[mask] = obj_models[ii](X[mask])[0]
-                for ii in range(nsplit):
-                    mask = ind+np.sign(dif).astype(int) == ii
-                    objmod2[mask] = obj_models[ii](X[mask])[0]
-                obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
-            else:
-                obj_prof = obj_models[0](X)[0]
-            obj_prof = obj_prof.reshape(pixel_array.shape)
+            if method == "new":
+                obj_prof = np.zeros_like(pixel_array.flatten())
+                Y = pixel_array_y.flatten()
+                X = pixel_array_x.flatten()
+                if nsplit > 1:
+                    ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
+                    dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
+                    objmod1 = np.zeros_like(X)
+                    objmod2 = np.zeros_like(X)
+                    for ii in range(nsplit):
+                        mask = ind == ii
+                        objmod1[mask] = obj_models[ii](X[mask])[0]
+                    for ii in range(nsplit):
+                        mask = ind+np.sign(dif).astype(int) == ii
+                        objmod2[mask] = obj_models[ii](X[mask])[0]
+                    obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
+                else:
+                    obj_prof = obj_models[0](X)[0]
+                obj_prof = obj_prof.reshape(pixel_array.shape)
             
             # Calculate object profile array
             #flat_prof = np.zeros(pixel_array.flatten())
@@ -1047,10 +1048,10 @@ class Extractor(object):
                 # We *also* need to evaluate the sky profile shape, too.
                 # This might be a bit more of a challenge, but we can try to
                 # stick to the usual one for now.
-                #use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-                #if method == "new": # Extra mask to deal with weird stuff at edge
-                #    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
-                use_mask = use_masks[j]
+                use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+                if method == "new": # Extra mask to deal with weird stuff at edge
+                    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+                #use_mask = use_masks[j]
                 xval = pixel_array_x[use_mask]
                 if method == "new":
                     phi_sky = flat_model[i](xval)[0]
@@ -1061,9 +1062,8 @@ class Extractor(object):
                         phi_obj[xval > 0] = 0.0 # these pixels should be sky
                     phi = np.array([phi_obj])
                 else:
-                    phi_all = flat_model[i](xval)[0]
-                    phi = np.array([phi_all])
-            
+                    phi = np.array([flat_model[i](xval)[0]])
+                
                 xtr = Extractum(phi, pixel_array[use_mask],
                                 mask=mask_array[use_mask].astype(bool),
                                 noise_model=noise_model,
@@ -1076,6 +1076,13 @@ class Extractor(object):
                                          c1=c1, ftol=ftol)
                 except:
                     embed()
+                #elif method == "arc":
+                #    phi = np.array([flat_model[i](xval)[0]])
+                #    xtr_mask = mask_array[use_mask]==0
+                #    if np.sum(xtr_mask) > 0:
+                #        model_amps = np.array([np.median(pixel_array[use_mask][xtr_mask]/phi[0][xtr_mask])])
+                #    else:
+                #        model_amps = np.array([0.0])
 
                 phi_scaled = phi * model_amps[:, np.newaxis]
                 sum_models = phi_scaled.sum(axis=0)
@@ -1089,11 +1096,11 @@ class Extractor(object):
                 # FBD: Clean up remaining cosmic rays Horne 1986 style
                 # by running one extra iteration of the fit.
                 if sigma > 6:
-                    clip = 8.0 # Sigma clip for Horne masking. Has to be fairly weak because profiles are inaccurate.
+                    clip = 8.0 # Sigma clip for Horne masking.
                     diff2 = (pixel_array[use_mask]-sum_models)**2
                     var = col_var
                     bad_pix = (diff2 > var*(clip**2))
-                    #print(bad_pix)
+
                     if np.sum(bad_pix) > 0:
                         xtr = Extractum(phi, pixel_array[use_mask],
                                         mask=(mask_array[use_mask]+bad_pix).astype(bool),
@@ -1125,6 +1132,7 @@ class Extractor(object):
                             extracted_flux[i,j] * astrotools.divide0(
                                 phi[:, ~xtr.mask].sum(axis=1),
                                 (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                    #extracted_var[i,j] = np.array([astrotools.divide0(np.sum(xtr_mask*phi[0]),np.sum(~xtr_mask*phi[0]*phi[0]/col_var))])
                 elif optimal:
                     extracted_flux[i,j,0] = model_amps[0]
                     #skyresid[j] = model_amps[1]
@@ -1742,13 +1750,13 @@ def do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,flat_pr
 
     return yfit.reshape(pixel_array.shape), sset.value
 
-@njit
-def get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=True):
-    use_mask = np.zeros((ny,pixel_array_y.shape[0],pixel_array_y.shape[1]))
-    for j in range(ny):
-        if clip_edges:
-            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x > -1800) & (pixel_array_x < 1800)
-        else: # Extra mask to deal with weird stuff at edge
-            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-    return use_mask
-    
+#@njit
+#def get_use_masks(ny,pixel_array_y,pixel_array_x,clip_edges=True):
+#    use_mask = np.zeros((ny,pixel_array_y.shape[0],pixel_array_y.shape[1]))
+#    for j in range(ny):
+#        if clip_edges:
+#            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+#        else: # Extra mask to deal with weird stuff at edge
+#            use_mask[j] = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+#    return use_mask
+#    
