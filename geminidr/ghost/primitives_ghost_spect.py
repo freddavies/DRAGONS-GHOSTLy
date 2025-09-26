@@ -1460,7 +1460,7 @@ class GHOSTSpect(GHOST):
                     correction = 1. / binned_blaze
                     
             # Pass through scattered light if it exists
-            if np.mean(ad[0].variance) < 10:
+            if np.mean(ad[0].variance) < 20:
                 slight = ad[0].variance.copy()
             else:
                 slight = np.zeros_like(ad[0].variance)
@@ -1966,15 +1966,18 @@ class GHOSTSpect(GHOST):
             # Mask cosmic rays
             # ONLY RUN ON SCIENCE FRAMES, NOT FLAT/ARC
             if 'FLAT' not in ad.tags:
-                lacos = lacosmic.lacosmic(ad[0].data,5.0,4.5,1.5,error=np.sqrt(ad[0].variance),mask=(ad[0].variance<=0))
-                ad[0].mask = ad[0].mask + lacos[1]
+                # This can mask real science pixels willy nilly because really we just want to remove all possible junk between orders,
+                # it doesn't matter if sky lines or real data get masked along the way because those regions are ignored anyway.
+                lacos = lacosmic.lacosmic(ad[0].data,2.0,2.0,0.75,error=np.sqrt(ad[0].variance),mask=(ad[0].variance<=0) | (ad[0].data<-20))
+                # THIS WAS A BAD IDEA SINCE THE MASK GETS PROPAGATED
+                #ad[0].mask = ad[0].mask + lacos[1]
 
             interp_points = []
             xs = xsampling // xbin
             y = np.repeat(np.arange(ny)[:, np.newaxis], xs, axis=1)
             regions, nregions = measurements.label(unilluminated)
             if ad[0].mask is not None:
-                regions[ad[0].mask > 0] = 0
+                regions[((ad[0].mask+lacos[1])>0)|(ad[0].data<-20)] = 0
             for ix in range(0, nx, xs):
                 _slice = (slice(None), slice(ix, ix+xs))
                 for i in range(1, nregions+1):

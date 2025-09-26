@@ -88,7 +88,7 @@ class extractSpectraConfig(config.Config):
     snoise = config.RangeField("Fraction of signal to be added to noise estimate for CR flagging",
                                float, 0.1, min=0, max=1)
     sigma = config.RangeField("Number of standard deviations at which to flag pixels",
-                              float, 6, min=3)
+                              float, 4.5, min=3)
     weighting = config.ChoiceField("Pixel weighting scheme for extraction", str,
                                    allowed={"uniform": "uniform weighting",
                                             "optimal": "optimal extraction"},
@@ -104,7 +104,7 @@ class extractSpectraConfig(config.Config):
                                    float, None, min=0.1, optional=True)
     
     nspl = config.RangeField("Spline splitting for object profile",
-                             int, 3, min=1, optional=True)
+                             int, 4, min=1, optional=True)
     
     debug_cr_map = config.Field("Add CR map to output?", bool, False)
     debug_order = config.RangeField("Order for CR debugging plot", int, None,
