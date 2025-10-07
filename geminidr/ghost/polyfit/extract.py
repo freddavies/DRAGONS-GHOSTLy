@@ -1334,556 +1334,393 @@ class Extractor(object):
 #                    plt.show()
 #                    embed()
                     
-        for i in range(nm):
-            print(f"{self.arm.m_min+i}...", end="")
-            sys.stdout.flush()
-            
-#                    xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
-#
-#                    pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
-#                                                                                      profile_y_microns,
-#                                                                                      matrices,self.slit_tilt,DQ.no_data)
-#
-#                    # Save the original pixel array
-#                    pixel_array_y = np.copy(pixel_array)
-#
-#                    # Calculate object profile array
-#                    obj_prof = np.zeros_like(pixel_array.flatten())
-#                    Y = pixel_array_y.flatten()
-#                    X = pixel_array_x.flatten()
-#                    if nsplit > 1:
-#                        ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
-#                        dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
-#                        objmod1 = np.zeros_like(X)
-#                        objmod2 = np.zeros_like(X)
-#                        for ii in range(nsplit):
-#                            mask = ind == ii
-#                            objmod1[mask] = obj_models[ii](X[mask])[0]
-#                        for ii in range(nsplit):
-#                            mask = ind+np.sign(dif).astype(int) == ii
-#                            objmod2[mask] = obj_models[ii](X[mask])[0]
-#                        obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
-#                    else:
-#                        obj_prof = obj_models[0](X)[0]
-#                    obj_prof = obj_prof.reshape(pixel_array.shape)
-#
-#                    # Prepare scattered light segment
-#                    slight_array = np.zeros_like(pixel_array)
-#
-#                    # Do the interpolation for all wavelengths in this order
-#                    # Save memory by overwriting the array of pixel locations with values
-#                    mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
-#
-#                    pixel_array = np.copy(data[xmin:xmax+1,:].T)
-#                    slight_array = np.copy(slight[xmin:xmax+1,:].T)
-#                    for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
-#                        mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
-#
-#                    skyfit, skymodel = do_pypeit_skysub(i,xmin,xmax,pixel_array,pixel_array_y,pixel_array_x,
-#                                             flat_model,noise_model,lacos,slight_array,
-#                                             fine_corr=fine_corr, arm=self.arm.arm)
-#                    pixel_array -= skyfit
-#
-#                    #embed()
-#
-#                    skyresid = np.zeros(ny)
-#
-#                    for j in range(ny):
-#                        debug_this_pixel = debug_pixel in [(self.arm.m_min+i, j)]
-#                        if correction is not None:
-#                            if correction[i, j] == 0:
-#                                extracted_flux[i, j] = 0
-#                                extracted_var[i, j] = 0
-#                                if debug_this_pixel:
-#                                    log.debug("FLATFIELD CORRECTION IS ZERO")
-#                                continue
-#                            c0, c1 = correction[i, j] ** 2 * m_noise.parameters
-#                            # Linear term only needs to be multiplied by a single
-#                            # factor of the blaze correction because the data have
-#                            # already been multiplied by a factor 20 lines above.
-#                            noise_model = lambda x: c0 + c1 * abs(x) / correction[i, j]
-#
-#                        use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-#                        # Extra mask to deal with weird stuff at edge
-#                        use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
-#                        xval = pixel_array_x[use_mask]
-#                        phi_sky = flat_model[i](xval)[0]
-#                        phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
-#                        if self.arm.arm == "red":
-#                            phi_obj[xval < 0] = 0.0 # these pixels should be sky
-#                        else: # self.arm.arm == "blue"
-#                            phi_obj[xval > 0] = 0.0 # these pixels should be sky
-#                        phi = np.array([phi_obj])
-#
-#                        xtr = Extractum(phi, pixel_array[use_mask],
-#                                        mask=mask_array[use_mask].astype(bool),
-#                                        noise_model=noise_model,
-#                                        pixel=(self.arm.m_min+i, j))
-#
-#                        obj_mask = mask_array[use_mask]
-#
-#                        try:
-#                            model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-#                                                 c1=c1, ftol=ftol)
-#                        except:
-#                            embed()
-#
-#                        phi_scaled = phi * model_amps[:, np.newaxis]
-#                        sum_models = phi_scaled.sum(axis=0)
-#                        tot_counts = sum_models + slight_array[use_mask]
-#                        if sky_spline:
-#                            tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-#                        col_var = noise_model(tot_counts)  # add scattered light to noise model
-#                        frac = astrotools.divide0(phi_scaled, sum_models)
-#                        frac[:, xtr.mask] = 0
-#
-#                        # FBD: Clean up remaining cosmic rays Horne 1986 style
-#                        # by running one extra iteration of the fit.
-#                        if method == "new":
-#                            clip = 5.0 # Sigma clip for Horne masking.
-#                            diff2 = (pixel_array[use_mask]-sum_models)**2
-#                            var = col_var
-#                            bad_pix = (diff2 > var*(clip**2))
-#
-#                            if np.sum(bad_pix) > 0:
-#                                xtr = Extractum(phi, pixel_array[use_mask],
-#                                                mask=(mask_array[use_mask]+bad_pix).astype(bool),
-#                                                noise_model=noise_model,
-#                                                pixel=(self.arm.m_min+i, j))
-#
-#                                obj_mask = mask_array[use_mask]
-#
-#                                try:
-#                                    model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-#                                                         c1=c1, ftol=ftol)
-#                                except:
-#                                    embed()
-#
-#                                phi_scaled = phi * model_amps[:, np.newaxis]
-#                                sum_models = phi_scaled.sum(axis=0)
-#                                tot_counts = sum_models + slight_array[use_mask]
-#                                if sky_spline:
-#                                    tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-#                                col_var = noise_model(tot_counts)  # add scattered light to noise model
-#                                frac = astrotools.divide0(phi_scaled, sum_models)
-#                                frac[:, xtr.mask] = 0
-#                        if optimal:
-#                            extracted_flux[i,j,0] = model_amps[0]
-#                            try:
-#                                extracted_var[i,j,0] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var))])
-#                            except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
-#                                extracted_var[i, j] = abs(
-#                                    extracted_flux[i, j] * astrotools.divide0(
-#                                        phi[:, ~xtr.mask].sum(axis=1),
-#                                        (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
-#
-#                            # In skysub mode it is a bit tricky to get the sky value. But not impossible!
-#                            if sky_spline:
-#                                try:
-#                                    extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
-#                                    use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_x < 100)
-#                                    xval_sky = pixel_array_x[use_mask_sky]
-#                                    phi_sky = np.array([flat_model[i](xval_sky)[0]])
-#                                    col_var_sky = noise_model(skyfit[use_mask_sky]+slight_array[use_mask_sky])
-#                                    sky_mask = mask_array[use_mask_sky].astype(bool)
-#                                    extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
-#                                    extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
-#                                except:
-#                                    extracted_flux[i,j,1] = 0.0
-#                                    extracted_var[i,j,1] = 0.0
-#                        else:
-#                            # Correction for flagged pixels
-#                            object_scaling = astrotools.divide0(phi.sum(axis=1),
-#                                                                phi[:, ~xtr.mask].sum(axis=1))
-#                            extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
-#                            extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
-#
-#                    if timing:
-#                        print(datetime.now() - start)
-#
-            # Done with first step -- now improve the sky model
-            
-            xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
-            
-            pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
-                                                                              profile_y_microns,
-                                                                              matrices,self.slit_tilt,DQ.no_data)
+        if method == "new": # do some more iterations to improve sky subtraction
+            for i in range(nm):
+                print(f"{self.arm.m_min+i}...", end="")
+                sys.stdout.flush()
+                # Done with first step -- now improve the sky model
                 
-            # Save the original pixel array
-            pixel_array_y = np.copy(pixel_array)
-            
-            # Prepare scattered light segment
-            slight_array = np.zeros_like(pixel_array)
-            
-            mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
-            
-            pixel_array = np.copy(data[xmin:xmax+1,:].T)
-            slight_array = np.copy(slight[xmin:xmax+1,:].T)
-            for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
-                mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+                xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
                 
-            # Calculate object profile array
-            obj_prof = np.zeros_like(pixel_array.flatten())
-            Y = pixel_array_y.flatten()
-            X = pixel_array_x.flatten()
-            if nsplit > 1:
-                ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
-                dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
-                objmod1 = np.zeros_like(X)
-                objmod2 = np.zeros_like(X)
-                for ii in range(nsplit):
-                    mask = ind == ii
-                    objmod1[mask] = obj_models[ii](X[mask])[0]
-                for ii in range(nsplit):
-                    mask = ind+np.sign(dif).astype(int) == ii
-                    objmod2[mask] = obj_models[ii](X[mask])[0]
-                obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
-            else:
-                obj_prof = obj_models[0](X)[0]
-            obj_prof = obj_prof.reshape(pixel_array.shape)
+                pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
+                                                                                  profile_y_microns,
+                                                                                  matrices,self.slit_tilt,DQ.no_data)
+                    
+                # Save the original pixel array
+                pixel_array_y = np.copy(pixel_array)
                 
-            # Compute object model
-            pixel_array_model = np.zeros_like(pixel_array)
-            for j in range(ny):
-                paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0) & (pixel_array_x > 50)
-                pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]
-                            
-            skyfit, skymodel = do_pypeit_skysub2(i,xmin,xmax,pixel_array,pixel_array_model,pixel_array_y,pixel_array_x,
-                                     flat_model,noise_model,lacos,slight_array,
-                                     fine_corr=fine_corr, arm=self.arm.arm)
-            pixel_array -= skyfit
-
-            skyresid = np.zeros(ny)
-
-            for j in range(ny):
-                use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-                # Extra mask to deal with weird stuff at edge
-                use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
-                xval = pixel_array_x[use_mask]
-                phi_sky = flat_model[i](xval)[0]
-                phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
-                if self.arm.arm == "red":
-                    phi_obj[xval < 0] = 0.0 # these pixels should be sky
-                else: # self.arm.arm == "blue"
-                    phi_obj[xval > 0] = 0.0 # these pixels should be sky
-                phi = np.array([phi_obj,phi_sky])
+                # Prepare scattered light segment
+                slight_array = np.zeros_like(pixel_array)
                 
-                xtr = Extractum(phi, pixel_array[use_mask],
-                                mask=mask_array[use_mask].astype(bool),
-                                noise_model=noise_model,
-                                pixel=(self.arm.m_min+i, j))
-                                
-                obj_mask = mask_array[use_mask]
-                            
-                try:
-                    model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                                         c1=c1, ftol=ftol)
-                except:
-                    embed()
-
-                phi_scaled = phi * model_amps[:, np.newaxis]
-                sum_models = phi_scaled.sum(axis=0)
-                tot_counts = sum_models + slight_array[use_mask]
-                if sky_spline:
-                    tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-                col_var = noise_model(tot_counts)  # add scattered light to noise model
-                frac = astrotools.divide0(phi_scaled, sum_models)
-                frac[:, xtr.mask] = 0
+                mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
                 
-                # FBD: Clean up remaining cosmic rays Horne 1986 style
-                # by running one extra iteration of the fit.
-                if method == "new":
-                    clip = 5.0 # Sigma clip for Horne masking.
-                    diff2 = (pixel_array[use_mask]-sum_models)**2
-                    var = col_var
-                    bad_pix = (diff2 > var*(clip**2))
-
-                    if np.sum(bad_pix) > 0:
-                        xtr = Extractum(phi, pixel_array[use_mask],
-                                        mask=(mask_array[use_mask]+bad_pix).astype(bool),
-                                        noise_model=noise_model,
-                                        pixel=(self.arm.m_min+i, j))
-                                        
-                        obj_mask = mask_array[use_mask]
-                                    
-                        try:
-                            model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                                                 c1=c1, ftol=ftol)
-                        except:
-                            embed()
-
-                        phi_scaled = phi * model_amps[:, np.newaxis]
-                        sum_models = phi_scaled.sum(axis=0)
-                        tot_counts = sum_models + slight_array[use_mask]
-                        if sky_spline:
-                            tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-                        col_var = noise_model(tot_counts)  # add scattered light to noise model
-                        frac = astrotools.divide0(phi_scaled, sum_models)
-                        frac[:, xtr.mask] = 0
-                if optimal:
-                    extracted_flux[i,j,0] = model_amps[0]
-                    try:
-                        extracted_var[i,j,0] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var))])
-                    except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
-                        extracted_var[i, j] = abs(
-                            extracted_flux[i, j] * astrotools.divide0(
-                                phi[:, ~xtr.mask].sum(axis=1),
-                                (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
-                                
-                    # In skysub mode it is a bit tricky to get the sky value. But not impossible!
-                    if sky_spline:
-                        try:
-                            extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
-                            use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)# & (pixel_array_x < 100)
-                            xval_sky = pixel_array_x[use_mask_sky]
-                            phi_sky = np.array([flat_model[i](xval_sky)[0]])
-                            col_var_sky = noise_model(skyfit[use_mask_sky]+slight_array[use_mask_sky])
-                            sky_mask = mask_array[use_mask_sky].astype(bool)
-                            extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
-                            extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
-                        except:
-                            extracted_flux[i,j,1] = 0.0
-                            extracted_var[i,j,1] = 0.0
+                pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                slight_array = np.copy(slight[xmin:xmax+1,:].T)
+                for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
+                    mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+                    
+                # Calculate object profile array
+                obj_prof = np.zeros_like(pixel_array.flatten())
+                Y = pixel_array_y.flatten()
+                X = pixel_array_x.flatten()
+                if nsplit > 1:
+                    ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
+                    dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
+                    objmod1 = np.zeros_like(X)
+                    objmod2 = np.zeros_like(X)
+                    for ii in range(nsplit):
+                        mask = ind == ii
+                        objmod1[mask] = obj_models[ii](X[mask])[0]
+                    for ii in range(nsplit):
+                        mask = ind+np.sign(dif).astype(int) == ii
+                        objmod2[mask] = obj_models[ii](X[mask])[0]
+                    obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
                 else:
-                    # Correction for flagged pixels
-                    object_scaling = astrotools.divide0(phi.sum(axis=1),
-                                                        phi[:, ~xtr.mask].sum(axis=1))
-                    extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
-                    extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
-
-            if timing:
-                print(datetime.now() - start)
-
-                
-            do_plot = False
-            if do_plot:
+                    obj_prof = obj_models[0](X)[0]
+                obj_prof = obj_prof.reshape(pixel_array.shape)
+                    
+                # Compute object model
                 pixel_array_model = np.zeros_like(pixel_array)
-                for j in range(3072-770,3072+770):
-                    paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
-                    xval = pixel_array_x[paint]
-                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]+skyresid[j]*flat_model[i](xval)[0]
-                pixel_array_model *= pixel_array_x != 0
-                fig,ax = plt.subplots(6,1,figsize=(24,8.5))
-                ax[0].imshow(((pixel_array+skyfit+slight_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[0].set_title('sci')
-                ax[1].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[1].set_title('sci-sky')
-                ax[2].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
-                aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
-                ax[2].set_title('(sci-sky)/std')
-                ax[3].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)).T,#/np.sqrt(noise_model(pixel_array.T))
-                             aspect=1,interpolation='none',vmin=-8,vmax=40,cmap='bone_r',rasterized=True)#,cmap='RdBu_r')
-                ax[3].set_title('sci-sky-obj')
-                ax[4].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array_model+skyfit)*(pixel_array_x!=0)).T,
-                             vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[4].set_title('sky+obj')
-                ax[5].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
-                             aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
-                ax[5].set_title('(sci-sky-obj)/std')
-                for x in ax.flatten():
-                    x.set_xlim(3072-750,3072+750)
-                fig.suptitle(f"order {self.arm.m_min+i}")
-                plt.tight_layout()
-                plt.savefig(f"extract_iter2_order{self.arm.m_min+i}.pdf",dpi=250)
-                plt.close()
+                for j in range(ny):
+                    paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0) & (pixel_array_x > 50)
+                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]
+                                
+                skyfit, skymodel = do_pypeit_skysub2(i,xmin,xmax,pixel_array,pixel_array_model,pixel_array_y,pixel_array_x,
+                                         flat_model,noise_model,lacos,slight_array,
+                                         fine_corr=fine_corr, arm=self.arm.arm)
+                pixel_array -= skyfit
+
+                skyresid = np.zeros(ny)
+
+                for j in range(ny):
+                    use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+                    # Extra mask to deal with weird stuff at edge
+                    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+                    xval = pixel_array_x[use_mask]
+                    phi_sky = flat_model[i](xval)[0]
+                    phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
+                    if self.arm.arm == "red":
+                        phi_obj[xval < 0] = 0.0 # these pixels should be sky
+                    else: # self.arm.arm == "blue"
+                        phi_obj[xval > 0] = 0.0 # these pixels should be sky
+                    phi = np.array([phi_obj,phi_sky])
+                    
+                    xtr = Extractum(phi, pixel_array[use_mask],
+                                    mask=mask_array[use_mask].astype(bool),
+                                    noise_model=noise_model,
+                                    pixel=(self.arm.m_min+i, j))
+                                    
+                    obj_mask = mask_array[use_mask]
+                                
+                    try:
+                        model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                             c1=c1, ftol=ftol)
+                    except:
+                        embed()
+
+                    phi_scaled = phi * model_amps[:, np.newaxis]
+                    sum_models = phi_scaled.sum(axis=0)
+                    tot_counts = sum_models + slight_array[use_mask]
+                    if sky_spline:
+                        tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
+                    col_var = noise_model(tot_counts)  # add scattered light to noise model
+                    frac = astrotools.divide0(phi_scaled, sum_models)
+                    frac[:, xtr.mask] = 0
+                    
+                    # FBD: Clean up remaining cosmic rays Horne 1986 style
+                    # by running one extra iteration of the fit.
+                    if method == "new":
+                        clip = 5.0 # Sigma clip for Horne masking.
+                        diff2 = (pixel_array[use_mask]-sum_models)**2
+                        var = col_var
+                        bad_pix = (diff2 > var*(clip**2))
+
+                        if np.sum(bad_pix) > 0:
+                            xtr = Extractum(phi, pixel_array[use_mask],
+                                            mask=(mask_array[use_mask]+bad_pix).astype(bool),
+                                            noise_model=noise_model,
+                                            pixel=(self.arm.m_min+i, j))
+                                            
+                            obj_mask = mask_array[use_mask]
+                                        
+                            try:
+                                model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                                     c1=c1, ftol=ftol)
+                            except:
+                                embed()
+
+                            phi_scaled = phi * model_amps[:, np.newaxis]
+                            sum_models = phi_scaled.sum(axis=0)
+                            tot_counts = sum_models + slight_array[use_mask]
+                            if sky_spline:
+                                tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
+                            col_var = noise_model(tot_counts)  # add scattered light to noise model
+                            frac = astrotools.divide0(phi_scaled, sum_models)
+                            frac[:, xtr.mask] = 0
+                    if optimal:
+                        extracted_flux[i,j,0] = model_amps[0]
+                        try:
+                            extracted_var[i,j,0] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var))])
+                        except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
+                            extracted_var[i, j] = abs(
+                                extracted_flux[i, j] * astrotools.divide0(
+                                    phi[:, ~xtr.mask].sum(axis=1),
+                                    (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                                    
+                        # In skysub mode it is a bit tricky to get the sky value. But not impossible!
+                        if sky_spline:
+                            try:
+                                extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
+                                use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)# & (pixel_array_x < 100)
+                                xval_sky = pixel_array_x[use_mask_sky]
+                                phi_sky = np.array([flat_model[i](xval_sky)[0]])
+                                col_var_sky = noise_model(skyfit[use_mask_sky]+slight_array[use_mask_sky])
+                                sky_mask = mask_array[use_mask_sky].astype(bool)
+                                extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
+                                extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
+                            except:
+                                extracted_flux[i,j,1] = 0.0
+                                extracted_var[i,j,1] = 0.0
+                    else:
+                        # Correction for flagged pixels
+                        object_scaling = astrotools.divide0(phi.sum(axis=1),
+                                                            phi[:, ~xtr.mask].sum(axis=1))
+                        extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
+                        extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
+
+                if timing:
+                    print(datetime.now() - start)
+
+                    
+                do_plot = False
+                if do_plot:
+                    pixel_array_model = np.zeros_like(pixel_array)
+                    for j in range(3072-770,3072+770):
+                        paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
+                        xval = pixel_array_x[paint]
+                        pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]+skyresid[j]*flat_model[i](xval)[0]
+                    pixel_array_model *= pixel_array_x != 0
+                    fig,ax = plt.subplots(6,1,figsize=(24,8.5))
+                    ax[0].imshow(((pixel_array+skyfit+slight_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[0].set_title('sci')
+                    ax[1].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[1].set_title('sci-sky')
+                    ax[2].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
+                    aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
+                    ax[2].set_title('(sci-sky)/std')
+                    ax[3].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)).T,#/np.sqrt(noise_model(pixel_array.T))
+                                 aspect=1,interpolation='none',vmin=-8,vmax=40,cmap='bone_r',rasterized=True)#,cmap='RdBu_r')
+                    ax[3].set_title('sci-sky-obj')
+                    ax[4].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array_model+skyfit)*(pixel_array_x!=0)).T,
+                                 vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[4].set_title('sky+obj')
+                    ax[5].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
+                                 aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
+                    ax[5].set_title('(sci-sky-obj)/std')
+                    for x in ax.flatten():
+                        x.set_xlim(3072-750,3072+750)
+                    fig.suptitle(f"order {self.arm.m_min+i}")
+                    plt.tight_layout()
+                    plt.savefig(f"extract_iter2_order{self.arm.m_min+i}.pdf",dpi=250)
+                    plt.close()
+
+                    #plt.show()
+                    #embed()
+            print("\n    Second iteration complete.",end="")
+            
+            for i in range(nm):
+                print(f"{self.arm.m_min+i}...", end="")
+                sys.stdout.flush()
+                
+                xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
+                
+                pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
+                                                                                  profile_y_microns,
+                                                                                  matrices,self.slit_tilt,DQ.no_data)
+                    
+                # Save the original pixel array
+                pixel_array_y = np.copy(pixel_array)
+                
+                # Prepare scattered light segment
+                slight_array = np.zeros_like(pixel_array)
+                
+                mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
+                
+                pixel_array = np.copy(data[xmin:xmax+1,:].T)
+                slight_array = np.copy(slight[xmin:xmax+1,:].T)
+                for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
+                    mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
+                    
+                # Calculate object profile array
+                obj_prof = np.zeros_like(pixel_array.flatten())
+                Y = pixel_array_y.flatten()
+                X = pixel_array_x.flatten()
+                if nsplit > 1:
+                    ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
+                    dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
+                    objmod1 = np.zeros_like(X)
+                    objmod2 = np.zeros_like(X)
+                    for ii in range(nsplit):
+                        mask = ind == ii
+                        objmod1[mask] = obj_models[ii](X[mask])[0]
+                    for ii in range(nsplit):
+                        mask = ind+np.sign(dif).astype(int) == ii
+                        objmod2[mask] = obj_models[ii](X[mask])[0]
+                    obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
+                else:
+                    obj_prof = obj_models[0](X)[0]
+                obj_prof = obj_prof.reshape(pixel_array.shape)
+                    
+                # Compute object model
+                pixel_array_model = np.zeros_like(pixel_array)
+                for j in range(ny):
+                    paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0) & (pixel_array_x > 50)
+                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]
+                                
+                skyfit, skymodel = do_pypeit_skysub2(i,xmin,xmax,pixel_array,pixel_array_model,pixel_array_y,pixel_array_x,
+                                         flat_model,noise_model,lacos,slight_array,
+                                         fine_corr=fine_corr, arm=self.arm.arm)
+                pixel_array -= skyfit
+
+                skyresid = np.zeros(ny)
+
+                for j in range(ny):
+                    use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
+                    # Extra mask to deal with weird stuff at edge
+                    use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
+                    xval = pixel_array_x[use_mask]
+                    phi_sky = flat_model[i](xval)[0]
+                    phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
+                    if self.arm.arm == "red":
+                        phi_obj[xval < 0] = 0.0 # these pixels should be sky
+                    else: # self.arm.arm == "blue"
+                        phi_obj[xval > 0] = 0.0 # these pixels should be sky
+                    phi = np.array([phi_obj,phi_sky])
+                    
+                    xtr = Extractum(phi, pixel_array[use_mask],
+                                    mask=mask_array[use_mask].astype(bool),
+                                    noise_model=noise_model,
+                                    pixel=(self.arm.m_min+i, j))
+                                    
+                    obj_mask = mask_array[use_mask]
+                                
+                    try:
+                        model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                             c1=c1, ftol=ftol)
+                    except:
+                        embed()
+
+                    phi_scaled = phi * model_amps[:, np.newaxis]
+                    sum_models = phi_scaled.sum(axis=0)
+                    tot_counts = sum_models + slight_array[use_mask]
+                    if sky_spline:
+                        tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
+                    col_var = noise_model(tot_counts)  # add scattered light to noise model
+                    frac = astrotools.divide0(phi_scaled, sum_models)
+                    frac[:, xtr.mask] = 0
+                    
+                    # FBD: Clean up remaining cosmic rays Horne 1986 style
+                    # by running one extra iteration of the fit.
+                    if method == "new":
+                        clip = 5.0 # Sigma clip for Horne masking.
+                        diff2 = (pixel_array[use_mask]-sum_models)**2
+                        var = col_var
+                        bad_pix = (diff2 > var*(clip**2))
+
+                        if np.sum(bad_pix) > 0:
+                            xtr = Extractum(phi, pixel_array[use_mask],
+                                            mask=(mask_array[use_mask]+bad_pix).astype(bool),
+                                            noise_model=noise_model,
+                                            pixel=(self.arm.m_min+i, j))
+                                            
+                            obj_mask = mask_array[use_mask]
+                                        
+                            try:
+                                model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
+                                                     c1=c1, ftol=ftol)
+                            except:
+                                embed()
+
+                            phi_scaled = phi * model_amps[:, np.newaxis]
+                            sum_models = phi_scaled.sum(axis=0)
+                            tot_counts = sum_models + slight_array[use_mask]
+                            if sky_spline:
+                                tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
+                            col_var = noise_model(tot_counts)  # add scattered light to noise model
+                            frac = astrotools.divide0(phi_scaled, sum_models)
+                            frac[:, xtr.mask] = 0
+                    if optimal:
+                        extracted_flux[i,j,0] = model_amps[0]
+                        try:
+                            extracted_var[i,j,0] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var))])
+                        except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
+                            extracted_var[i, j] = abs(
+                                extracted_flux[i, j] * astrotools.divide0(
+                                    phi[:, ~xtr.mask].sum(axis=1),
+                                    (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
+                                    
+                        # In skysub mode it is a bit tricky to get the sky value. But not impossible!
+                        if sky_spline:
+                            try:
+                                extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
+                                use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)# & (pixel_array_x < 100)
+                                xval_sky = pixel_array_x[use_mask_sky]
+                                phi_sky = np.array([flat_model[i](xval_sky)[0]])
+                                col_var_sky = noise_model(skyfit[use_mask_sky]+slight_array[use_mask_sky])
+                                sky_mask = mask_array[use_mask_sky].astype(bool)
+                                extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
+                                extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
+                            except:
+                                extracted_flux[i,j,1] = 0.0
+                                extracted_var[i,j,1] = 0.0
+                    else:
+                        # Correction for flagged pixels
+                        object_scaling = astrotools.divide0(phi.sum(axis=1),
+                                                            phi[:, ~xtr.mask].sum(axis=1))
+                        extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
+                        extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
+
+                if timing:
+                    print(datetime.now() - start)
+
+                    
+                do_plot = False
+                if do_plot:
+                    pixel_array_model = np.zeros_like(pixel_array)
+                    for j in range(3072-770,3072+770):
+                        paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
+                        xval = pixel_array_x[paint]
+                        pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]+skyresid[j]*flat_model[i](xval)[0]
+                    pixel_array_model *= pixel_array_x != 0
+                    fig,ax = plt.subplots(6,1,figsize=(24,8.5))
+                    ax[0].imshow(((pixel_array+skyfit+slight_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[0].set_title('sci')
+                    ax[1].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[1].set_title('sci-sky')
+                    ax[2].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
+                    aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
+                    ax[2].set_title('(sci-sky)/std')
+                    ax[3].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)).T,#/np.sqrt(noise_model(pixel_array.T))
+                                 aspect=1,interpolation='none',vmin=-8,vmax=40,cmap='bone_r',rasterized=True)#,cmap='RdBu_r')
+                    ax[3].set_title('sci-sky-obj')
+                    ax[4].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array_model+skyfit)*(pixel_array_x!=0)).T,
+                                 vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
+                    ax[4].set_title('sky+obj')
+                    ax[5].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
+                                 aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
+                    ax[5].set_title('(sci-sky-obj)/std')
+                    for x in ax.flatten():
+                        x.set_xlim(3072-750,3072+750)
+                    fig.suptitle(f"order {self.arm.m_min+i}")
+                    plt.tight_layout()
+                    plt.savefig(f"extract_iter3_order{self.arm.m_min+i}.pdf",dpi=250)
+                    plt.close()
 
                 #plt.show()
                 #embed()
-        print("\n    Second iteration complete.",end="")
-        
-        for i in range(nm):
-            print(f"{self.arm.m_min+i}...", end="")
-            sys.stdout.flush()
+            print("\n    Third iteration complete.",end="")
             
-            xmin, xmax = get_xmin_xmax(i,x_map,nx,ny,profile_y_microns,matrices)
-            
-            pixel_array, pixel_array_x, mask_array, all_phi = get_pixel_array(i,x_map,nx,ny,xmin,xmax,
-                                                                              profile_y_microns,
-                                                                              matrices,self.slit_tilt,DQ.no_data)
-                
-            # Save the original pixel array
-            pixel_array_y = np.copy(pixel_array)
-            
-            # Prepare scattered light segment
-            slight_array = np.zeros_like(pixel_array)
-            
-            mask_array |= (np.logical_or(pixel_array < 0, pixel_array >= ny) * DQ.no_data)
-            
-            pixel_array = np.copy(data[xmin:xmax+1,:].T)
-            slight_array = np.copy(slight[xmin:xmax+1,:].T)
-            for bit in 2 ** (np.arange(DQnbits, dtype=DQ.datatype)):
-                mask_array |= (((self.badpixmask[xmin:xmax+1,:] & bit).astype(float) > 0) * bit).T
-                
-            # Calculate object profile array
-            obj_prof = np.zeros_like(pixel_array.flatten())
-            Y = pixel_array_y.flatten()
-            X = pixel_array_x.flatten()
-            if nsplit > 1:
-                ind = np.round((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1))))).astype(int)
-                dif = ((nsplit-1)-np.abs((Y-0.5*ny)/(ny/(2*(nsplit-1)))))-ind
-                objmod1 = np.zeros_like(X)
-                objmod2 = np.zeros_like(X)
-                for ii in range(nsplit):
-                    mask = ind == ii
-                    objmod1[mask] = obj_models[ii](X[mask])[0]
-                for ii in range(nsplit):
-                    mask = ind+np.sign(dif).astype(int) == ii
-                    objmod2[mask] = obj_models[ii](X[mask])[0]
-                obj_prof = objmod1*(1-np.abs(dif))+objmod2*np.abs(dif)
-            else:
-                obj_prof = obj_models[0](X)[0]
-            obj_prof = obj_prof.reshape(pixel_array.shape)
-                
-            # Compute object model
-            pixel_array_model = np.zeros_like(pixel_array)
-            for j in range(ny):
-                paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0) & (pixel_array_x > 50)
-                pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]
-                            
-            skyfit, skymodel = do_pypeit_skysub2(i,xmin,xmax,pixel_array,pixel_array_model,pixel_array_y,pixel_array_x,
-                                     flat_model,noise_model,lacos,slight_array,
-                                     fine_corr=fine_corr, arm=self.arm.arm)
-            pixel_array -= skyfit
-
-            skyresid = np.zeros(ny)
-
-            for j in range(ny):
-                use_mask = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)
-                # Extra mask to deal with weird stuff at edge
-                use_mask = use_mask & (pixel_array_x > -1800) & (pixel_array_x < 1800)
-                xval = pixel_array_x[use_mask]
-                phi_sky = flat_model[i](xval)[0]
-                phi_obj = obj_prof[use_mask]#obj_model(xval)[0]
-                if self.arm.arm == "red":
-                    phi_obj[xval < 0] = 0.0 # these pixels should be sky
-                else: # self.arm.arm == "blue"
-                    phi_obj[xval > 0] = 0.0 # these pixels should be sky
-                phi = np.array([phi_obj,phi_sky])
-                
-                xtr = Extractum(phi, pixel_array[use_mask],
-                                mask=mask_array[use_mask].astype(bool),
-                                noise_model=noise_model,
-                                pixel=(self.arm.m_min+i, j))
-                                
-                obj_mask = mask_array[use_mask]
-                            
-                try:
-                    model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                                         c1=c1, ftol=ftol)
-                except:
-                    embed()
-
-                phi_scaled = phi * model_amps[:, np.newaxis]
-                sum_models = phi_scaled.sum(axis=0)
-                tot_counts = sum_models + slight_array[use_mask]
-                if sky_spline:
-                    tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-                col_var = noise_model(tot_counts)  # add scattered light to noise model
-                frac = astrotools.divide0(phi_scaled, sum_models)
-                frac[:, xtr.mask] = 0
-                
-                # FBD: Clean up remaining cosmic rays Horne 1986 style
-                # by running one extra iteration of the fit.
-                if method == "new":
-                    clip = 5.0 # Sigma clip for Horne masking.
-                    diff2 = (pixel_array[use_mask]-sum_models)**2
-                    var = col_var
-                    bad_pix = (diff2 > var*(clip**2))
-
-                    if np.sum(bad_pix) > 0:
-                        xtr = Extractum(phi, pixel_array[use_mask],
-                                        mask=(mask_array[use_mask]+bad_pix).astype(bool),
-                                        noise_model=noise_model,
-                                        pixel=(self.arm.m_min+i, j))
-                                        
-                        obj_mask = mask_array[use_mask]
-                                    
-                        try:
-                            model_amps = xtr.fit(debug=debug_this_pixel, c0=c0,
-                                                 c1=c1, ftol=ftol)
-                        except:
-                            embed()
-
-                        phi_scaled = phi * model_amps[:, np.newaxis]
-                        sum_models = phi_scaled.sum(axis=0)
-                        tot_counts = sum_models + slight_array[use_mask]
-                        if sky_spline:
-                            tot_counts += skyfit[use_mask]*(skyfit[use_mask]>0)
-                        col_var = noise_model(tot_counts)  # add scattered light to noise model
-                        frac = astrotools.divide0(phi_scaled, sum_models)
-                        frac[:, xtr.mask] = 0
-                if optimal:
-                    extracted_flux[i,j,0] = model_amps[0]
-                    try:
-                        extracted_var[i,j,0] = np.array([astrotools.divide0(np.sum(~xtr.mask*phi[0]),np.sum(~xtr.mask*phi[0]*phi[0]/col_var))])
-                    except: # this should not be try/except but it is a very easy way to switch to the old method as a fallback
-                        extracted_var[i, j] = abs(
-                            extracted_flux[i, j] * astrotools.divide0(
-                                phi[:, ~xtr.mask].sum(axis=1),
-                                (abs(xtr.data - sum_models + phi_scaled) * phi / col_var)[:, ~xtr.mask].sum(axis=1)))
-                                
-                    # In skysub mode it is a bit tricky to get the sky value. But not impossible!
-                    if sky_spline:
-                        try:
-                            extracted_flux[i,j,1] = skymodel(np.array([j],dtype=float))[0]
-                            use_mask_sky = (pixel_array_y != 0) & (np.abs(pixel_array_y-j) < 0.5)# & (pixel_array_x < 100)
-                            xval_sky = pixel_array_x[use_mask_sky]
-                            phi_sky = np.array([flat_model[i](xval_sky)[0]])
-                            col_var_sky = noise_model(skyfit[use_mask_sky]+slight_array[use_mask_sky])
-                            sky_mask = mask_array[use_mask_sky].astype(bool)
-                            extracted_flux[i,j,1] /= np.mean(phi_sky[0][~sky_mask])
-                            extracted_var[i,j,1] = astrotools.divide0(np.sum(*phi_sky),np.sum(~sky_mask*phi_sky*phi_sky/col_var_sky))
-                        except:
-                            extracted_flux[i,j,1] = 0.0
-                            extracted_var[i,j,1] = 0.0
-                else:
-                    # Correction for flagged pixels
-                    object_scaling = astrotools.divide0(phi.sum(axis=1),
-                                                        phi[:, ~xtr.mask].sum(axis=1))
-                    extracted_flux[i, j] = np.dot(frac, xtr.data) * object_scaling
-                    extracted_var[i, j] = np.dot(frac, col_var) * object_scaling ** 2
-
-            if timing:
-                print(datetime.now() - start)
-
-                
-            do_plot = False
-            if do_plot:
-                pixel_array_model = np.zeros_like(pixel_array)
-                for j in range(3072-770,3072+770):
-                    paint = (np.abs(pixel_array_y-j) < 0.5) & (pixel_array_y != 0)
-                    xval = pixel_array_x[paint]
-                    pixel_array_model[paint] = extracted_flux[i][j,0]*obj_prof[paint]+skyresid[j]*flat_model[i](xval)[0]
-                pixel_array_model *= pixel_array_x != 0
-                fig,ax = plt.subplots(6,1,figsize=(24,8.5))
-                ax[0].imshow(((pixel_array+skyfit+slight_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[0].set_title('sci')
-                ax[1].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)).T,vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[1].set_title('sci-sky')
-                ax[2].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
-                aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
-                ax[2].set_title('(sci-sky)/std')
-                ax[3].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)).T,#/np.sqrt(noise_model(pixel_array.T))
-                             aspect=1,interpolation='none',vmin=-8,vmax=40,cmap='bone_r',rasterized=True)#,cmap='RdBu_r')
-                ax[3].set_title('sci-sky-obj')
-                ax[4].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array_model+skyfit)*(pixel_array_x!=0)).T,
-                             vmin=-8,vmax=40,interpolation='none',cmap='bone_r',rasterized=True)
-                ax[4].set_title('sky+obj')
-                ax[5].imshow((~lacos[1][xmin:xmax+1,:].T*(pixel_array-pixel_array_model)*(pixel_array_x!=0)/np.sqrt(noise_model(pixel_array_model+skyfit+slight_array))).T,
-                             aspect=1,interpolation='none',vmin=-5,vmax=5,cmap='RdBu_r',rasterized=True)
-                ax[5].set_title('(sci-sky-obj)/std')
-                for x in ax.flatten():
-                    x.set_xlim(3072-750,3072+750)
-                fig.suptitle(f"order {self.arm.m_min+i}")
-                plt.tight_layout()
-                plt.savefig(f"extract_iter3_order{self.arm.m_min+i}.pdf",dpi=250)
-                plt.close()
-
-                #plt.show()
-                #embed()
-        print("\n    Third iteration complete.",end="")
-            
-            
+        print("\n    Extraction complete.",end="")
         print("\n")
         
         #embed()
