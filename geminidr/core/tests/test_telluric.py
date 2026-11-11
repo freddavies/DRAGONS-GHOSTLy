@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+import json
 import os
 
 from astropy.modeling import fitting, models
@@ -12,6 +13,7 @@ import astrodata, gemini_instruments
 from astrodata.testing import ad_compare
 
 from geminidr.gnirs.primitives_gnirs_longslit import GNIRSLongslit
+from geminidr.f2.primitives_f2_longslit import F2Longslit
 from geminidr.core.primitives_telluric import make_linelist, GaussianLineSpreadFunction
 from gempy.library import astromodels as am
 
@@ -45,38 +47,49 @@ def ext(request):
 
 @pytest.mark.preprocessed_data
 @pytest.mark.regression
-@pytest.mark.parametrize("filename,mag,bbtemp",
-                         [("hip93667_109_ad.fits", "K=5.241", 9650)]
+@pytest.mark.parametrize("filename",
+                         ["N20220816S0533_telluricFitted.fits",
+                          "N20171214S0163_telluricFitted.fits"]
                          )
-def test_fit_telluric(path_to_inputs, path_to_refs, filename, mag, bbtemp):
+def test_fit_telluric(path_to_inputs, filename):
     """
-    Overall regression test for fitTelluric() with some parameters fixed
+    Regression test for fitTelluric(). This takes an already fitted telluric
+    as input and copies the SENSFUNC and TELLFIT extensions to compare with
+    the output of fitTelluric() with the same parameters. This avoids the
+    need for a separate reference file, since the input is also the reference.
     """
     ad = astrodata.open(os.path.join(path_to_inputs, filename))
+    sensfunc = [ext.SENSFUNC.copy() for ext in ad]
+    tellfit = ad.TELLFIT.copy()
+
+    history = ad.HISTORY
+    # It's only the last one that matters
+    fitTelluric_row = len(history) - 1
+    while fitTelluric_row >= 0:
+        if history['primitive'][fitTelluric_row] == 'fitTelluric':
+            break
+        fitTelluric_row -= 1
+    params = {k: v for k, v in json.loads(history['args'][fitTelluric_row]).items()
+              if k != 'interactive'}
 
     pm = PrimitiveMapper(ad.tags, ad.instrument(generic=True).lower(),
                          mode='sq', drpkg='geminidr')
     pclass = pm.get_applicable_primitives()
     p = pclass([ad])
-    adout = p.fitTelluric(magnitude=mag, bbtemp=bbtemp,
-                          shift_tolerance=None).pop()
+    adout = p.fitTelluric(**params).pop()
 
-    adref = astrodata.open(os.path.join(path_to_refs, adout.filename))
-    assert ad_compare(adout, adref)
+    np.testing.assert_allclose(adout.TELLFIT['PCA coefficients'].data,
+                               tellfit['PCA coefficients'].data, atol=1e-3)
 
-    # Compare PCA coefficients
-    assert np.allclose(adout.TELLFIT['PCA coefficients'].data,
-                       adref.TELLFIT['PCA coefficients'].data)
-
-    # Compare data-derived absorption
-    for ext_out, ext_ref in zip(adout, adref):
-        assert np.allclose(ext_out.TELLABS, ext_ref.TELLABS)
-
-        # Compare evaluations of SENSFUNCs
-        sensfunc_out = am.table_to_model(ext_out.SENSFUNC)
-        sensfunc_ref = am.table_to_model(ext_ref.SENSFUNC)
-        pixels = np.arange(ext_out.data.size)
-        assert np.allclose(sensfunc_out(pixels), sensfunc_ref(pixels))
+    # Evaluate the SENSFUNCs over the full range of pixels
+    for ext, sens in zip(adout, sensfunc):
+        sensfunc_out = am.table_to_model(ext.SENSFUNC)
+        sensfunc_ref = am.table_to_model(sens)
+        assert sensfunc_out.meta['xunit'] == sensfunc_ref.meta['xunit'] == u.nm
+        assert sensfunc_out.meta['yunit'] == sensfunc_ref.meta['yunit']
+        goodpix = ext.mask == 0
+        w = ext.wcs(np.arange(ext.data.size)[goodpix])
+        assert np.allclose(sensfunc_out(w), sensfunc_ref(w), atol=1e-3)
 
 
 @pytest.mark.preprocessed_data
@@ -176,16 +189,16 @@ def test_gaussian_line_spread_function_convolve_and_resample(ext, resolution):
         assert m_final.stddev * 2.35482 == pytest.approx(w0 / resolution,
                                                          rel=0.01)
 
-
 @pytest.mark.preprocessed_data
 @pytest.mark.regression
 @pytest.mark.parametrize("filename,model_params",
                          # GNIRS L-band, sky emission
                          [('N20100820S0214_wavelengthSolutionDetermined.fits',
-                           {"absorption": False, "nlines": 100}),
+                           {"absorption": False, "num_lines": 100,
+                            "resolution": 1759.0}),
                           # GNIRS J-band, sky absorption in object spectrum
                           ('N20121221S0199_aperturesFound.fits',
-                           {"absorption": True, "nlines": 50}),
+                           {"absorption": True, "num_lines": 50}),
                          ])
 def test_get_atran_linelist(filename, model_params, change_working_dir,
                              path_to_inputs, path_to_refs):
@@ -221,3 +234,27 @@ def test_make_linelist(num_lines):
                                    i in range(10)])
     assert len(linelist) == num_lines
     np.testing.assert_allclose(linelist[:, 0], expected_linelist)
+
+
+@pytest.mark.preprocessed_data
+@pytest.mark.regression
+def test_get_airglow_linelist(path_to_inputs, path_to_refs):
+    # Spectrum of F2 OH-emission sky lines for plotting
+    # We use the _wavelengthSolutionDetermined file because thw WAVE model
+    # is a Chebyshev1D, as required. (In normal reduction, a Cheb1D will be
+    # provided bto _get_sky_spectrum() y determineWavelengthSolution,
+    # regardless of the state of the input file.)
+    ad_f2 = astrodata.open(os.path.join(
+        path_to_inputs, 'S20180114S0104_wavelengthSolutionDetermined.fits'))
+    wave_model = am.get_named_submodel(ad_f2[0].wcs.forward_transform, 'WAVE')
+
+    p = F2Longslit([])
+    linelist = p._get_airglow_linelist(wave_model=wave_model, ext=ad_f2[0],
+                                       config={"absorption": False, "num_lines": 100,
+                                               "resolution": 620.0})
+    refplot_data_f2 = linelist.reference_spectrum
+    ref_refplot_spec_f2 = np.loadtxt(
+        os.path.join(path_to_refs, "S20180114S0104_refplot_spec.dat"))
+
+    np.testing.assert_allclose(ref_refplot_spec_f2, refplot_data_f2["refplot_spec"], atol=1e-3)
+

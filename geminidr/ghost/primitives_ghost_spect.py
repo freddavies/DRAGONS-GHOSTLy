@@ -15,7 +15,7 @@ from astropy.io.ascii.core import InconsistentTableError
 from astropy import units as u
 from astropy import constants as const
 from astropy.stats import sigma_clip
-from astropy.modeling import fitting, models
+from astropy.modeling import fitting, models, bind_bounding_box
 from astropy.table import Table
 from scipy import interpolate
 from scipy.ndimage import measurements
@@ -33,6 +33,7 @@ from gemini_instruments.gemini import get_specphot_name
 from geminidr.core.primitives_spect import Spect
 from geminidr.gemini.lookups import DQ_definitions as DQ
 from geminidr.gemini.lookups import extinction_data as extinct
+from geminidr import CalibrationNotFoundError
 from gempy.library.nddops import NDStacker
 from gempy.library import peak_finding, transform, astrotools as at
 from gempy.adlibrary.manipulate_ad import rebin_data
@@ -176,7 +177,8 @@ class GHOSTSpect(GHOST):
                 arc_after = self._request_bracket_arc(ad, before=False)
 
             if arc_before is None and arc_after is None:
-                raise IOError(f'No valid arcs found for {ad.filename}')
+                raise CalibrationNotFoundError('No valid arcs found for '
+                                               f'{ad.filename}')
 
             log.stdinfo(f'Arcs for {ad.filename}:')
             if arc_before:
@@ -232,7 +234,9 @@ class GHOSTSpect(GHOST):
 
             for ext in ad:
                 # Needs to be transposed because of astropy x-first
-                ext.wcs = gWCS([(input_frame, models.Tabular2D(lookup_table=0.1 * wfit.T, name="WAVE")),
+                m = models.Tabular2D(lookup_table=0.1 * wfit.T, name="WAVE")
+                bind_bounding_box(m, m.bounding_box.bounding_box(order="F"), order="F")
+                ext.wcs = gWCS([(input_frame, m),
                                 (output_frame, None)])
 
             # Timestamp and update filename
@@ -570,6 +574,40 @@ class GHOSTSpect(GHOST):
 
         return adinputs
 
+    def captureWfitInstMon(self, adinputs=None, **params):
+        """
+        Captures a subset of values from the .WFIT into headers for the
+        instrument monitoring system to pick up.
+
+        The values captured are the coefficients of the polynomial that converts
+        (scaled) pixel location to wavelength for the reference order, which
+        (after some investigation) turn out to be .WFIT[:, 5] (ie the last
+        vector for 6th degree polynomials), with the 0-th
+        order (constant) term last.
+
+        :param adinputs:
+        :return:
+        """
+
+        log = self.log
+        log.debug(gt.log_message("primitive", self.myself(), "starting"))
+
+        for ad in adinputs:
+            for ext in ad:
+                if not hasattr(ext, 'WFIT'):
+                    log.warning("Ext has no WFIT attribute - skipping")
+                    ad.info()
+                    continue
+
+                coeffs = ext.WFIT[:, -1]
+                # They are in reverse order - 0th power coefficient is last
+                for i in range(len(coeffs)):
+                    j = len(coeffs) - 1 - i
+                    keyword = f'WFITCO{j}'
+                    ext.hdr[keyword] = (coeffs[i], 'Wavelength Fit Polynomial Coefficient')
+
+        return adinputs
+
     def combineOrders(self, adinputs=None, **params):
         """
         Combine the independent orders from the input ADs into one or more
@@ -632,7 +670,7 @@ class GHOSTSpect(GHOST):
         adoutputs = []
         numext = set([len(ad) for ad in adinputs])
         if len(numext) != 1:
-            raise IndexError("Not all inputs have the same number of extensions")
+            raise ValueError("Not all inputs have the same number of extensions")
         else:
             numext = numext.pop()
         wave_limits = {arm: np.array([get_wavelength_limits(ext)
@@ -857,8 +895,8 @@ class GHOSTSpect(GHOST):
                         str([_.detector_x_bin() for _ in adinputs]))
             log.stdinfo('Detector y bins: %s' %
                         str([_.detector_y_bin() for _ in adinputs]))
-            raise IOError('Your input list of files contains a mix of '
-                          'different binning modes')
+            raise ValueError('Your input list of files contains a mix of '
+                             'different binning modes')
 
         adinputs_orig = list(adinputs)
         if isinstance(params['dark'], list):
@@ -873,7 +911,7 @@ class GHOSTSpect(GHOST):
 
         dark = params.get("dark")
         if dark is None:
-            dark_list = self.caldb.get_processed_slitflat(adinputs)
+            dark_list = self.caldb.get_processed_dark(adinputs)
         else:
             dark_list = (dark, None)
 
@@ -892,8 +930,8 @@ class GHOSTSpect(GHOST):
                     dark_list_out.append(None)
                     continue
                 else:
-                    raise IOError("No processed dark listed for {}".
-                                  format(ad.filename))
+                    raise CalibrationNotFoundError("No processed dark listed "
+                                                   f"for {ad.filename}")
 
             if dark.detector_x_bin() == ad.detector_x_bin() and \
                     dark.detector_y_bin() == ad.detector_y_bin():
@@ -1034,10 +1072,11 @@ class GHOSTSpect(GHOST):
                         abs(flux - median_filter(flux, size=2*radius+1)),
                         size=2*radius+1)
                     variance = nmad * nmad
+                # We send halfwidth=2 to avoid contamination from nearby peaks
                 peaks = peak_finding.find_wavelet_peaks(
                     flux.copy(), widths=np.arange(2.5, 4.5, 0.1),
                     variance=variance, min_snr=min_snr, min_sep=5,
-                    pinpoint_index=None, reject_bad=False)
+                    pinpoint_index=None, reject_bad=False, halfwidth=2)
                 fit_g = fitting.TRFLSQFitter()  # recommended fitter
                 these_peaks = []
                 for x in peaks[0]:
@@ -1260,26 +1299,30 @@ class GHOSTSpect(GHOST):
             # there's no calibration, or it's missing) places a None in the
             # list, allowing a graceful continuation.
             if flat is None:  # can't do anything as no XMOD
-                raise RuntimeError(f"No processed flat listed for {ad.filename}")
+                raise CalibrationNotFoundError("No processed flat listed for "
+                                               f"{ad.filename}")
 
             if slitflat is None:
                 # TBD: can we use a synthetic slitflat (traceFibers in
                 # makeProcessedFlat would need one too)
-                raise RuntimeError(f"No processed slitflat listed for {ad.filename}")
+                raise CalibrationNotFoundError("No processed slitflat listed "
+                                               f"for {ad.filename}")
                 if slit is None:
                     slitflat_filename = "synthetic"
                     slitflat_data = None
                 else:
-                    raise RuntimeError(f"{ad.filename} has a processed slit "
-                                       "but no processed slitflat")
+                    raise CalibrationNotFoundError(
+                        f"{ad.filename} has a processed slit but no processed "
+                        "slitflat")
             else:
                 slitflat_filename = slitflat.filename
                 slitflat_data = slitflat[0].data
 
             if slit is None:
                 if seeing is None:
-                    raise RuntimeError(f"No processed slit listed for {ad.filename}"
-                                       "and no seeing estimate has been provided")
+                    raise CalibrationNotFoundError(
+                        f"No processed slit listed for {ad.filename} and no "
+                        "seeing estimate has been provided")
                 else:
                     slit_filename = f"synthetic (seeing {seeing})"
                     slit_data = None
@@ -1434,6 +1477,8 @@ class GHOSTSpect(GHOST):
                                 ifus.append('ifu1')
                             slit_data = sview.fake_slitimage(
                                         flat_image=slitflat_data, ifus=ifus, seeing=seeing)
+                        kw = 'ESEEING' + k[0].upper()
+                        ad.phu.set(kw, fwhm, f"Estimated seeing in the {k} arm")
 
             if slitflat is None:
                 log.stdinfo("Creating synthetic slitflat image")
@@ -1486,6 +1531,11 @@ class GHOSTSpect(GHOST):
                     vignetting=vignetting, arm_flat=arm_flat,
                     slight=slight, nspl_obj = nspl
                 )
+                # Retrieve the numer of CRs found. Fail silently if no can
+                try:
+                    ad.phu.set('NCRSFND', extractor.crsfound, 'Number of CRs found')
+                except AttributeError:
+                    pass
 
                 # Flag pixels with VAR=0 that don't already have a flag
                 extracted_mask |= (extracted_var == 0) & (extracted_mask == 0)
@@ -1568,15 +1618,15 @@ class GHOSTSpect(GHOST):
 
             if std is None:
                 if 'sq' in self.mode or do_cal == 'force':
-                    raise RuntimeError("No processed standard listed for "
-                                       f"{ad.filename}")
+                    raise CalibrationNotFoundError("No processed standard "
+                                                   f"listed for {ad.filename}")
                 else:
                     log.warning(f"No changes will be made to {ad.filename}, "
                                 "since no standard was specified")
                     continue
 
             if ad.arm() != std.arm():
-                raise RuntimeError(f"{ad.filename} and {std.filename} are "
+                raise ValueError(f"{ad.filename} and {std.filename} are "
                                    "from different GHOST arms.")
 
             origin_str = f" (obtained from {origin})" if origin else ""
@@ -1753,7 +1803,8 @@ class GHOSTSpect(GHOST):
         for ad, slitflat, origin in zip(*gt.make_lists(adinputs, *flat_list,
                                                        force_ad=(1,))):
             if slitflat is None:
-                raise RuntimeError(f"No processed_slitflat found for {ad.filename}")
+                raise CalibrationNotFoundError("No processed_slitflat found "
+                                               f"for {ad.filename}")
 
             res_mode = ad.res_mode()
             arm = GhostArm(arm=ad.arm(), mode=res_mode,
@@ -2240,8 +2291,6 @@ class GHOSTSpect(GHOST):
                 if not hasattr(ext, "WAVL"):
                     log.warning(f"    EXTVER {i} has no WAVL table. Ignoring.")
                     continue
-                has_var = ext.variance is not None
-                has_mask = ext.mask is not None
                 npix, nobj = ext.shape[-2:]
                 try:
                     orders = list(range(ext.shape[-3]))
@@ -2276,9 +2325,9 @@ class GHOSTSpect(GHOST):
                     for order, wave_model in zip(orders, wave_models):
                         ndd = ext.nddata.__class__(data=ext.data[order, :, spec].ravel(),
                                                    meta={'header': ext.hdr.copy()})
-                        if has_mask:
+                        if ext.has_mask():
                             ndd.mask = ext.mask[order, :, spec].ravel()
-                        if has_var:
+                        if ext.has_variance():
                             ndd.variance = ext.variance[order, :, spec].ravel()
                         adout.append(ndd)
                         adout[-1].hdr[ad._keyword_for('data_section')] = f"[1:{npix}]"
@@ -2338,7 +2387,8 @@ class GHOSTSpect(GHOST):
                 continue
 
             if slit_flat is None:
-                raise RuntimeError(f"No processed_slitflat found for {ad.filename}")
+                raise CalibrationNotFoundError("No processed_slitflat found "
+                                               f"for {ad.filename}")
 
             origin_str = f" (obtained from {origin})" if origin else ""
             log.stdinfo(f"{ad.filename}: using slitflat "

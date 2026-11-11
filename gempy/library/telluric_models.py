@@ -200,9 +200,9 @@ class SingleTelluricModel(Fittable1DModel):
         self.pca_params = slice(None, len(names))
         self.cont_params = slice(len(names), None)
         if self.continuum_function == self.spline3:
-            names.extend([f'spl{i:02d}' for i in range(self.order + 3)])
+            names.extend([f'spl{i}' for i in range(self.order + 3)])
         else:
-            names.extend([f'cheb{i:02d}' for i in range(self.order + 1)])
+            names.extend([f'cheb{i}' for i in range(self.order + 1)])
         return tuple(names)
 
     @property
@@ -230,8 +230,14 @@ class SingleTelluricModel(Fittable1DModel):
     def place_knots(self, mask):
         # Space the knots equally among the *unmasked* pixels
         ngood = (~mask.astype(bool)).sum()
-        knot_pixels = np.linspace(0, ngood - 1, self.order + 1)
-        knot_waves = np.interp(knot_pixels, np.arange(ngood), sorted(self.waves[~mask.astype(bool)]))
+        if self.order < ngood + 3:
+            knot_pixels = np.linspace(0, ngood - 1, self.order + 1)
+            knot_waves = np.interp(knot_pixels, np.arange(ngood),
+                                   sorted(self.waves[~mask.astype(bool)]))
+        else:
+            knot_pixels = np.linspace(0, mask.size - 1, self.order + 1)
+            knot_waves = np.interp(knot_pixels, np.arange(mask.size),
+                                   sorted(self.waves))
         self.knots = np.r_[[knot_waves[0]] * 3, knot_waves, [knot_waves[-1]] * 3]
 
     def continuum(self, x):
@@ -340,7 +346,7 @@ class MultipleTelluricModels(Fittable1DModel):
         names = list(self.models[0].param_names[self.models[0].pca_params])
         for n, (func, ord) in enumerate(zip(self.functions, self.orders)):
             if func == "spline3":
-                names.extend([f'm{n}spl{i:02d}' for i in range(ord + 3)])
+                names.extend([f'm{n}spl{i}' for i in range(ord + 3)])
                 self.nparams.append(ord + 3)
             else:
                 names.extend([f'm{n}cheb{i}' for i in range(ord + 1)])

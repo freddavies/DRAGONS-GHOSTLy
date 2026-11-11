@@ -1,4 +1,4 @@
-# Copyright(c) 2019-2025 Association of Universities for Research in Astronomy, Inc.
+# Copyright(c) 2019-2026 Association of Universities for Research in Astronomy, Inc.
 
 """
 peaks.py
@@ -30,7 +30,7 @@ from scipy import interpolate, optimize, signal
 
 from astrodata import NDAstroData
 from geminidr.gemini.lookups import DQ_definitions as DQ
-from gempy.library.nddops import NDStacker, sum1d
+from gempy.library.nddops import NDStacker, combine1d
 from gempy.utils import logutils
 
 from . import astrotools as at, astromodels as am
@@ -41,7 +41,8 @@ log = logutils.get_logger(__name__)
 
 @insert_descriptor_values("dispersion_axis")
 def average_along_slit(ext, center=None, offset_from_center=None,
-                       nsum=None, dispersion_axis=None, combiner="mean"):
+                       nsum=None, dispersion_axis=None, combiner="mean",
+                       strict=True):
     """
     Calculates the average along the slit and its pixel-by-pixel variance.
 
@@ -59,6 +60,9 @@ def average_along_slit(ext, center=None, offset_from_center=None,
         Number of rows/columns to combine
     combiner : str
         Method to use for combining
+    strict: bool
+        if False, then extract integer columns/rows rather than fractional
+        ones at the edges of the extraction region
 
     Returns
     -------
@@ -74,7 +78,10 @@ def average_along_slit(ext, center=None, offset_from_center=None,
     slit_polynomial : `Chebyshev1D` model
         Chebyshev polynomial representing the center of the extracted aperture.
     """
-    constant_slit = 'LS' in ext.tags
+    if combiner not in ("median", "mean"):
+        raise ValueError("combiner must be 'median' or 'mean'")
+
+    constant_slit = 'LS' in ext.tags or "TRANSFRM" in ext.phu
     npix, mpix = ext.shape[1 - dispersion_axis], ext.shape[dispersion_axis]
     if nsum is None:
         nsum = npix
@@ -83,11 +90,13 @@ def average_along_slit(ext, center=None, offset_from_center=None,
     if offset_from_center is None:
         offset_from_center = 0
 
+    extract_slice = slice(None)
     if constant_slit:
-        extract_slice = slice(max(0, int(center + 1 - 0.5 * nsum)),
-                              min(npix, int(center + 1 + 0.5 * nsum)))
-    else:
-        extract_slice = slice(None)
+        start = max(-0.5, center - 0.5 * nsum)
+        if not strict or abs(np.modf(start)[0] - 0.5) < 0.001:
+            start = int(start + 0.51)
+            stop = min(npix, start + nsum)
+            extract_slice = slice(start, stop)
 
     # Transpose the data if needed. If the slit is constant, extracting it here
     # is all that is needed.
@@ -95,49 +104,58 @@ def average_along_slit(ext, center=None, offset_from_center=None,
         ext.data, ext.mask, ext.variance,
         transpose=(dispersion_axis == 0), section=extract_slice)
 
-    if constant_slit:
+    if extract_slice.start is not None:
         # Create 1D spectrum; pixel-to-pixel variation is a better indicator
         # of S/N than the VAR plane
         # FixMe: "variance=variance" breaks test_gmos_spect_ls_distortion_determine.
         #  Use "variance=None" to make them pass again.
         data, mask, variance = NDStacker.combine(data, mask=mask, variance=None,
                                                  combiner=combiner)
-
         return data, mask, variance, extract_slice
 
     else:
-        edge1, edge2 = [am.table_to_model(row) for row in ext.SLITEDGE]
-        # Create a polynomial tracing the slit between the two edges.
-        # The coefficients for this polynomial are a combination of
-        # those of the two edge polynomials times the fraction across the
-        # extension where the center line is to be.
-        center_coeffs = [(p1 + p2) * 0.5 for p1, p2
-                         in zip(edge1.parameters, edge2.parameters)]
-        coeffs_dict = {coeff: value for coeff, value in zip(edge1.param_names,
-                                                            center_coeffs)}
-        coeffs_dict['c0'] += offset_from_center
-        slit_polynomial = models.Chebyshev1D(degree=edge1.degree,
-                                             domain=edge1.domain,
-                                             **coeffs_dict)
+        if constant_slit:
+            slit_polynomial = models.Chebyshev1D(degree=0, c0=center,
+                                                 domain=(0, mpix-1))
+        else:
+            edge1, edge2 = [am.table_to_model(row) for row in ext.SLITEDGE]
+            # Create a polynomial tracing the slit between the two edges.
+            # The coefficients for this polynomial are a combination of
+            # those of the two edge polynomials times the fraction across the
+            # extension where the center line is to be.
+            center_coeffs = [(p1 + p2) * 0.5 for p1, p2
+                             in zip(edge1.parameters, edge2.parameters)]
+            coeffs_dict = {coeff: value for coeff, value in zip(edge1.param_names,
+                                                                center_coeffs)}
+            coeffs_dict['c0'] += offset_from_center
+            slit_polynomial = models.Chebyshev1D(degree=edge1.degree,
+                                                 domain=edge1.domain,
+                                                 **coeffs_dict)
 
         centers = np.array([slit_polynomial(n) for n in range(0, mpix)])
         data_out = np.empty([mpix], dtype=np.float32)
-        mask_out = np.empty_like(data_out, dtype=np.uint16)
-        variance_out = np.empty_like(data_out)
+        mask_out = None if mask is None else np.empty_like(data_out, dtype=np.uint16)
+        variance_out = None if variance is None else np.empty_like(data_out)
 
-        # Sum `nsum` pixels around the center at each column.
-        for i, center_pix in enumerate(centers):
-            n1 = center_pix + 1 - 0.5 * nsum
-            n2 = center_pix + 1 + 0.5 * nsum
-            nddata = NDAstroData(data[:, i], mask=mask[:, i],
-                                 variance=variance[:, i])
-            data_out[i], mask_out[i], variance_out[i] = sum1d(nddata, n1, n2)
-
-        # Divide by number of pixels summed to get the mean.
+        # Average `nsum` pixels around the center at each column.
         # FIXME: This should ideally respect the "combiner" argument, and handle
         # all the combine methods NDStacker does. (mean, median, wtmean, lmedian)
-        data_out /= nsum
-        variance_out /= nsum ** 2
+        for i, center_pix in enumerate(centers):
+            n1 = center_pix - 0.5 * nsum
+            n2 = center_pix + 0.5 * nsum
+            nddata = NDAstroData(data[:, i], mask=None if mask is None else mask[:, i],
+                                 variance=None if variance is None else variance[:, i])
+            data_out[i], m, v = combine1d(nddata, n1, n2, average=True)
+            if m is not None:
+                mask_out[i] = m
+            if v is not None:
+                variance_out[i] = v
+
+            if combiner == "median":
+                data_out[i] = np.median(nddata.data[int(np.round(n1)):int(np.round(n2))+1])
+
+        if combiner == "median" and variance_out is not None:
+            variance_out *= 0.5 * np.sqrt(np.pi)  # Laplace
 
         # Pass the polynomial for the center instead of the extract slice
         return data_out, mask_out, variance_out, slit_polynomial
@@ -246,7 +264,11 @@ def estimate_peak_width(data, mask=None, boxcar_size=None, nlines=None):
             widths.append(width)
         goodpix[lo:hi] = False
         niters += 1
-    return sigma_clip(widths).mean()
+
+    if len(widths) == 0:
+        return None
+    else:
+        return sigma_clip(widths).mean()
 
 
 def get_extrema(profile, prof_mask=None, min_snr=3, remove_edge_maxima=True):
@@ -404,7 +426,10 @@ def get_extrema(profile, prof_mask=None, min_snr=3, remove_edge_maxima=True):
         l = 0 if lowest == 0 else apertures[lowest-1]
         r = 0 if lowest == len(apertures)-1 else apertures[lowest+1]
         if extrema[lowest*2+1][1] < median:
-            merge_with_neighbor(lowest)
+            if len(order) > 1:
+                merge_with_neighbor(lowest)
+            else:  # this is the only peak so we've not found anything
+                return []
         else:
             apertures[lowest] = apnext
             apnext += 1
@@ -601,8 +626,9 @@ def find_apertures(ext, max_apertures, min_sky_region, percentile,
 
 
 @unpack_nddata
-def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, min_sep=3,
-                       min_frac=0.20, reject_bad=True, pinpoint_index=-1):
+def find_wavelet_peaks(data, fwidth=None, widths=None, mask=None, variance=None,
+                       min_snr=1, min_sep=3, min_frac=0.20, reject_bad=True,
+                       pinpoint_index=-1, halfwidth=None):
     """
     Find peaks in a 1D array using a wavelet method. This uses scipy.signal
     routines, but requires some duplication of that code since the
@@ -614,8 +640,11 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
     ----------
     data : 1D array
         The pixel values of the 1D spectrum
+    fwidth : float/None
+        Expected FWHM of line-like features to look for
     widths : array-like
-        Sigma values of line-like features to look for
+        Sigma values of line-like features to look for. Not used if fwidth
+        is provided.
     mask : 1D array (optional)
         Mask (peaks with bad pixels are rejected) - optional
     variance : 1D array (optional)
@@ -632,15 +661,26 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
         which index (in the wavelet-transformed array, ordered by "widths")
         should be used for determining more the more accurate peak positions
         (None => use untransformed data)
+    halfwidth: int / Nonw
+        half-width of the centering box; None will use a value derived from
+        the "widths" parameter
 
     Returns
     -------
-    2D array: peak pixels and SNRs (sorted by pixel coordinate)
+    2D array: peak pixels, peak values, and SNRs (sorted by pixel coordinate)
     """
-    mask = mask.astype(bool) if mask is not None else np.zeros_like(data, dtype=bool)
+    if widths is None:
+        widths = ricker_widths(fwidth)
+
+    # Non-linear peaks are OK but saturated ones are not
+    mask = ((mask & (DQ.max ^ DQ.saturated)).astype(bool) if mask is not None
+            else np.zeros_like(data, dtype=bool))
 
     max_width = max(widths)
     window_size = 4 * max_width + 1
+    edge = 2.35482 * np.median(widths)  # edge-avoidance = FWHM
+    if halfwidth is None:
+        halfwidth = int(np.ceil(0.5 * (edge - 1)))
 
     # If no variance is supplied we estimate S/N from pixel-to-pixel variations
     # (do this before any smoothing)
@@ -686,7 +726,6 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
 
     # Turn into array and remove those too close to the edges
     peaks = np.array(new_peaks)
-    edge = 2.35482 * np.median(widths)
     peaks = peaks[np.logical_and(peaks > edge, peaks < len(data) - 1 - edge)]
 
     # Remove peaks very close to unilluminated/no-data pixels
@@ -702,8 +741,8 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
 
     # Clip the really noisy parts of the data and get more accurate positions
     #pinpoint_data[snr < 0.5] = 0
-    peaks = pinpoint_peaks(pinpoint_data, peaks=peaks, mask=mask,
-                           halfwidth=int(0.5*np.median(widths)))[0]
+    peaks, values = pinpoint_peaks(pinpoint_data, peaks=peaks, mask=mask,
+                                   halfwidth=halfwidth)
 
     # Clean up peaks that are too close together
     while True:
@@ -712,12 +751,15 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
             break
         i = np.argmax(diffs < min_sep)
         # Replace with mean of re-pinpointed points
-        new_peaks = pinpoint_peaks(pinpoint_data, peaks=peaks[i:i+2])[0]
+        new_peaks = pinpoint_peaks(pinpoint_data, peaks=peaks[i:i+2])
         del peaks[i+1]
-        if new_peaks:
-            peaks[i] = np.mean(new_peaks)
+        del values[i+1]
+        if new_peaks[0]:
+            peaks[i] = np.mean(new_peaks[0])
+            values[i] = np.mean(new_peaks[1])
         else:  # somehow both peaks vanished
             del peaks[i]
+            del values[i]
 
     #final_peaks = [p for p in peaks if snr[int(p + 0.5)] > min_snr]
     final_peaks = peaks
@@ -726,9 +768,9 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
     # Remove suspiciously bright peaks and return as array of
     # locations and SNRs, sorted by location
     if reject_bad:
-        good_peaks = reject_bad_peaks(list(zip(final_peaks, peak_snrs)))
+        good_peaks = reject_bad_peaks(list(zip(final_peaks, values, peak_snrs)))
     else:
-        good_peaks = list(zip(final_peaks, peak_snrs))
+        good_peaks = list(zip(final_peaks, values, peak_snrs))
     #print("KLDEBUG: T=", np.array(sorted(good_peaks)).T)
 
     # When no peaks are found the array is an empty list.  When called,
@@ -739,7 +781,7 @@ def find_wavelet_peaks(data, widths=None, mask=None, variance=None, min_snr=1, m
 
     T = np.array(sorted(good_peaks)).T
     if not T.size:
-        T = np.array([[],[]])
+        T = np.array([[],[], []])
     return T
 
 
@@ -872,17 +914,17 @@ def reject_bad_peaks(peaks):
 
     Parameters
     ----------
-    peaks: sequence of 2-tuples:
-        peak location and "strength" (e.g., SNR) of peaks
+    peaks: sequence of 3-tuples:
+        peak location, value, and "strength" (e.g., SNR) of peaks
 
     Returns
     -------
-    sequence of 2-tuples:
+    sequence of 3-tuples:
         accepted elements of input list
     """
     diff = 3  # Compare 1st brightest to 4th brightest
-    peaks.sort(key=lambda x: x[1])  # Sort by SNR
-    while len(peaks) > diff and (peaks[-1][1] / peaks[-(diff + 1)][1] > 3):
+    peaks.sort(key=lambda x: x[2])  # Sort by SNR
+    while len(peaks) > diff and (peaks[-1][2] / peaks[-(diff + 1)][2] > 3):
         del peaks[-1]
     return peaks
 
@@ -1134,3 +1176,21 @@ def _construct_slit_profile(ext, min_sky_region=50, percentile=80,
         else:
             profile = np.nanmean(masked_data, axis=1)
     return profile, prof_mask
+
+
+def ricker_widths(fwidth):
+    """
+    Get a set of widths to use for the Ricker wavelet based on an expected
+    FWHM. The exact values are somewhat arbitrary, but they are chosen to
+    sample the range of widths around the expected FWHM well.
+
+    Parameters
+    ----------
+    fwidth: float
+        expected FWHM of line-like features to look for
+
+    Returns
+    -------
+    list of floats: widths to use for Ricker wavelet transform
+    """
+    return 0.42466 * np.arange(0.75, 1.26, 0.05) * fwidth

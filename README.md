@@ -10,20 +10,29 @@
 </tr>
 </table>
 
+### Project
+[![Project Status: Active – The project has reached a stable, usable state and is being actively developed.](https://www.repostatus.org/badges/latest/active.svg)](https://www.repostatus.org/#active)
+[![GitHub version](https://badge.fury.io/gh/GeminiDRSoftware%2Fdragons.svg)](https://badge.fury.io/gh/GeminiDRSoftware%2Fdragons)
+![Supported python versions -- 3.12](https://img.shields.io/badge/3.12-%234b8bbe?logo=Python&logoColor=%234b8bbe&label=For%20Python%3A)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20752356-blue.svg)](https://doi.org/10.5281/zenodo.20752356)
+
+### Publishing
+![Conda Version](https://img.shields.io/badge/conda-v4.2.2-green)
+
 # Current Status
-**The stable version is v4.0.0.**  
+**The stable version is v4.2.2.**  
 
-
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.15226659.svg)](https://doi.org/10.5281/zenodo.15226659) DRAGONS is distributed as a conda package, *dragons*, and it is 
+DRAGONS is distributed as a conda package, *dragons*, and it is 
 included in the conda *gemini* stack.
 
-Version 4.0 is recommend for the reduction of **imaging** data from Gemini's
+Version 4.2.2 is recommend for the reduction of **imaging** data from Gemini's
 current facility instruments: GMOS, NIRI, Flamingos-2, and GSAOI, for the
-reduction of GMOS and GNIRS **longslit spectroscopy** data, and the reduction 
+reduction of GMOS, GNIRS, and Flamingos 2 **longslit spectroscopy** data, 
+for the reduction of GNIRS cross-dispersed data, and the reduction 
 of GHOST data.
 
-To reduce other types of Gemini spectroscopy data, please continue to use 
-the [Gemini IRAF package](https://www.gemini.edu/observing/phase-iii/reducing-data/gemini-iraf-data-reduction-software).
+To reduce other types of Gemini spectroscopy data (ie. MOS and IFU), please 
+continue to use the [Gemini IRAF package](https://www.gemini.edu/observing/phase-iii/reducing-data/gemini-iraf-data-reduction-software).
 
 To install DRAGONS:
 
@@ -39,7 +48,7 @@ $ conda config --add channels http://astroconda.gemini.edu/public
 ```
 
 
-A list of changes since 3.2 can be found in the [Change Logs](https://dragons.readthedocs.io/en/v4.0.0/changes.html).
+A list of changes since 4.1 can be found in the [Change Logs](https://dragons.readthedocs.io/en/v4.2.1/changes.html).
 
 ---
 # What is DRAGONS
@@ -52,12 +61,13 @@ reduction of Gemini data.
 ---
 
 # Documentation
-Documentation on DRAGONS v4.0 is available on "readthedocs" at:
+Documentation on DRAGONS v4.2.2 is available on "readthedocs" at:
 
-* https://dragons.readthedocs.io/en/v4.0.0/
+* https://dragons.readthedocs.io/en/v4.2.2/
 
 There your will find manuals for Astrodata and the Recipe System, and hands-on
-tutorials on reducing Gemini imaging data with DRAGONS.
+tutorials on reducing Gemini imaging, longslit, and cross-dispersed data
+with DRAGONS.
 
 Gemini users with data should pick the tutorial discussing
 the reduction of data from the appropriate instrument and mode.  
@@ -70,16 +80,23 @@ manuals.
 # Setting up a development environment
 
 To run checkouts, first set up a development conda environment.  This is what
-we are using at this time for the `master` branch and the `release/4.0.x` 
+we are using at this time for the `master` branch and the `release/4.x` 
 branches.
 
 ```
-$ conda create -n dgdev3.12_20250520 python=3.12 "astropy>=6" astroquery matplotlib "numpy<2" psutil pytest python-dateutil requests scikit-image scipy sextractor "sqlalchemy>=2.0.0" "gwcs>=0.15,<=0.22.1" specutils "bokeh>=3" holoviews cython future "astroscrappy>=1.1" fitsverify jsonschema ds9 jupyter ipympl imexam sphinx sphinx_rtd_theme objgraph
-$ conda activate dgdev3.12_20250520
-$ pip install git+https://github.com/GeminiDRSoftware/FitsStorage.git@v3.4.x
+$ conda create -n dgdev3.12_20260401 python=3.12 "astropy>=7" astroquery matplotlib psutil pytest python-dateutil requests scikit-image scipy sextractor "sqlalchemy>=2.0.0" "gwcs>=0.25,<1.0" "specutils>=2.0" "bokeh>=3" holoviews cython future "astroscrappy>=1.2" fitsverify jsonschema ds9 jupyter ipympl imexam sphinx sphinx_rtd_theme objgraph
+$ conda activate dgdev3.12_20260401
+$ pip install git+https://github.com/GeminiDRSoftware/FitsStorage.git@v3.6.2
 ```
 Dependencies change all the time and can break the development environment
 or cause problems when conda tries to find a solution for the dependencies. 
 This not guaranteed to work flawlessly, you might have to adjust version
 requirements.
 
+---
+
+The primary reference to be cited by users of DRAGONS and the current DOI are:
+
+[K. Labrie et al. 2023, RNAAS, v7, Issue 10, id.214](https://iopscience.iop.org/article/10.3847/2515-5172/ad0044)
+
+[DRAGONS DOI](https://doi.org/10.5281/zenodo.19373829)

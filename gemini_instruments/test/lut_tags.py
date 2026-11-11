@@ -255,7 +255,7 @@ fixture_data = {
                                     'UNPREPARED'],
     ('F2', 'S20160317S0053.fits'): ['ACQUISITION', 'F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED'],
     ('F2', 'S20160317S0055.fits'): ['ACQUISITION', 'F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL',
-                                    'UNPREPARED'],
+                                    'UNPREPARED', 'THRUSLIT', 'LS'],
     # for MASK: MASKNAME != 'None'
 
     #   F2 MOS
@@ -268,7 +268,8 @@ fixture_data = {
     # But the headers are crap, so OBSCLASS not set to "acq", so
     # won't work.  Needs to be replaced when really data available.
     # Note that old system does not define F2 ACQUISITION
-    ('F2', 'S20120104S0055.fits'): ['F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED'],
+    ('F2', 'S20120104S0055.fits'): ['F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED',
+                                    'THRUSLIT', 'MOS'],
     # For MASK, I think that MASKTYPE != 0 will do.
     # Same as above regarding ACQUISITION
 
@@ -276,7 +277,8 @@ fixture_data = {
     # The headers are more likely to match with post-commissioning setup.
     ('F2', 'S20150622S0003.fits'): ['ACQUISITION', 'F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED'],
     # Should be able to use OBSCLASS to set ACQUISITION.
-    ('F2', 'S20150622S0004.fits'): ['ACQUISITION', 'F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED'],
+    ('F2', 'S20150622S0004.fits'): ['ACQUISITION', 'F2', 'IMAGE', 'GEMINI', 'SOUTH', 'RAW', 'SIDEREAL', 'UNPREPARED',
+                                    'THRUSLIT', 'MOS'],
     ('F2', 'S20150622S0005.fits'): ['F2', 'MOS', 'SPECT', 'GEMINI', 'SOUTH', 'NON_SIDEREAL', 'RAW', 'UNPREPARED'],
     ('F2', 'S20150622S0008.fits'): ['CAL', 'F2', 'MOS', 'ARC', 'SPECT', 'GEMINI', 'SOUTH', 'NON_SIDEREAL', 'RAW',
                                     'UNPREPARED'],
@@ -292,7 +294,7 @@ fixture_data = {
     ('F2', 'S20160616S0072.fits') : ['GCAL_IR_ON', 'FLAT', 'SIDEREAL', 'SPECT', 'F2', 'CAL', 'LS', 'GEMINI', 'SOUTH',
                                      'UNPREPARED', 'RAW', 'LAMPON', 'GCALFLAT'],
     ('F2', 'S20160616S0075.fits') : ['IMAGE', 'SIDEREAL', 'F2', 'ACQUISITION', 'IMAGE', 'GEMINI', 'SOUTH', 'UNPREPARED',
-                                     'RAW'],
+                                     'RAW', 'THRUSLIT', 'LS'],
     ('F2', 'S20160708S0025.fits') : ['AT_ZENITH', 'AZEL_TARGET', 'DARK', 'F2', 'CAL', 'NON_SIDEREAL', 'GEMINI', 'SOUTH',
                                      'UNPREPARED', 'RAW'],
 
@@ -350,4 +352,14 @@ fixture_data = {
     ('GHOST', 'S20230214S0025_red002.fits'): ['RED', 'GHOST', 'SIDEREAL', 'UNPREPARED', 'SPECT', 'SOUTH', 'RAW', 'GEMINI', 'XD'],
     ('GHOST', 'S20230214S0025_slit.fits'): ['SLIT', 'GHOST', 'SIDEREAL', 'SLITV', 'UNPREPARED', 'SOUTH', 'IMAGE', 'RAW', 'GEMINI'],
 
+    ('IGRINS-2', 'N20260303S0289.fits'):  # arc
+        ['IGRINS-2', 'GEMINI', 'NORTH', 'RAW', 'UNPREPARED', 'BUNDLE'],
+    ('IGRINS-2', 'N20260303S0290.fits'):  # flat
+        ['IGRINS-2', 'GEMINI', 'NORTH', 'RAW', 'UNPREPARED', 'BUNDLE', 'LAMPOFF', 'CAL', 'FLAT', 'GCALFLAT'],
+    ('IGRINS-2', 'N20260228S0506.fits'):  # dark (no DARK?)
+        ['IGRINS-2', 'GEMINI', 'NORTH', 'RAW', 'UNPREPARED', 'BUNDLE'],
+    ('IGRINS-2', 'N20260228S0200.fits'):  # telluric standard
+        ['IGRINS-2', 'GEMINI', 'NORTH', 'RAW', 'UNPREPARED', 'BUNDLE', 'CAL', 'SIDEREAL', 'STANDARD'],
+    ('IGRINS-2', 'N20260303S0044.fits'):  # blank sky
+        ['IGRINS-2', 'GEMINI', 'NORTH', 'RAW', 'UNPREPARED', 'BUNDLE', 'CAL', 'SIDEREAL', 'SKY']
 }

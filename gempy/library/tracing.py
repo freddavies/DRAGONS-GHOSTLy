@@ -22,7 +22,7 @@ from astropy.stats import sigma_clip, sigma_clipped_stats
 from astrodata import NDAstroData
 from geminidr.gemini.lookups import DQ_definitions as DQ
 from gempy.library.fitting import fit_1D
-from gempy.library.nddops import NDStacker, sum1d
+from gempy.library.nddops import NDStacker, combine1d
 from gempy.utils import logutils
 
 from . import astrotools as at
@@ -151,7 +151,7 @@ class Aperture:
         all_x2 = self._center_pixels + aper_upper
 
         ext = NDAstroData(data, mask=mask, variance=var)
-        results = [sum1d(ext[:, i], x1, x2)
+        results = [combine1d(ext[:, i], x1, x2)
                    for i, (x1, x2) in enumerate(zip(all_x1, all_x2))]
         self.data[:] = [result.data for result in results]
         if mask is not None:
@@ -190,7 +190,8 @@ class Aperture:
                 mvar_init, np.ma.masked_where(np.logical_or(mask, var == 0).ravel(),
                                               abs(data).ravel()), var.ravel())
             var_mask = var_mask.reshape(var.shape)[ix1:ix2]
-            var = np.where(var_mask, var[ix1:ix2], var_model(data[ix1:ix2]))
+            var = np.where(var_mask, var[ix1:ix2],
+                           var_model(data[ix1:ix2]).astype(np.float32))
         var[var < 0] = 0
 
         if mask is None:
@@ -216,14 +217,16 @@ class Aperture:
                 m_init = models.Chebyshev1D(degree=degree, domain=[0, npix - 1])
                 m_final, _ = fit_it(m_init, pixels, row,
                                     weights=np.sqrt(ivar_row) * np.where(spectrum > 0, spectrum, 0))
-                profile_models.append(m_final(pixels))
+                profile_models.append(m_final(pixels).astype(np.float32))
             profile_model_spectrum = np.array([np.where(pm < 0, 0, pm) for pm in profile_models])
             sums = profile_model_spectrum.sum(axis=0)
             model_profile = at.divide0(profile_model_spectrum, sums)
 
             # Step 6: revise variance estimates
-            var = np.where(var_mask | mask & BAD_BITS, var,
-                           var_model(abs(model_profile * spectrum)))
+            var = np.where(
+                var_mask | mask & BAD_BITS, var,
+                var_model(abs(model_profile * spectrum)).astype(np.float32)
+            )
             inv_var = at.divide0(1.0, var)
 
             # Step 7: identify cosmic ray hits: we're (probably) OK
@@ -361,7 +364,8 @@ class Aperture:
 
 
 class Trace:
-    """A class describing a trace along columns. It has the following attributes:
+    """
+    A class describing a trace along columns. It has the following attributes:
 
     starting_point : len-2 iterable
         The starting point of the trace on the array, in (y, x) format.
@@ -371,14 +375,20 @@ class Trace:
         The highest y-value that the trace has reached.
     bottom_limit : float
         The lowest y-value that the trace have reached.
+
+    Note that trace_lines() (which creates Trace objects) *always* traces in
+    the vertical direction, regardless of the orientation of the image.
     """
-    def __init__(self, starting_point, reverse_returned_coords=False):
+    def __init__(self, starting_point, weight=None,
+                 reverse_returned_coords=False):
         """
         Parameters
         ----------
         starting_point : len-2 iterable of numbers
             The point from which to start the trace, with the tracing axis as
             the first number.
+        weight: float/None
+            the weight to assign to the starting point
         reverse_returned_coords : bool, optional
             Whether to reversed the coordinates when returning them. The default
             is False. This is because Trace keeps track of coordinates with the
@@ -386,7 +396,7 @@ class Trace:
             but it may be preferable to get the output in (x, y) order.
         """
         self.starting_point = self._verify_point(starting_point)
-        self.points = deque([self.starting_point])
+        self.points = deque([self.starting_point + (weight,)])
         self.last_point = self.starting_point
         self.steps_missed = 0
         self.active = True
@@ -429,35 +439,57 @@ class Trace:
     def start_coordinates(self, reverse=None):
         """Return the starting point in the same coordinate order as the
         input_coordinates() and reference_coordinates()"""
-        return self.starting_point[::-1] if (
-                reverse or reverse is None and self.reversed) else self.starting_point
+        return self.starting_point[1::-1] if (
+                reverse or reverse is None and self.reversed) else self.starting_point[:2]
 
     def input_coordinates(self, reverse=None):
         if reverse or reverse is None and self.reversed:
-            return [(x, y) for y, x in self.points]
-        return [(y, x) for y, x in self.points]
+            return [(x, y) for y, x, w in self.points]
+        return [(y, x) for y, x, w in self.points]
 
     def reference_coordinates(self, reference_coord=None, reverse=None):
         xref = reference_coord or self.starting_point[1]
         if reverse or reverse is None and self.reversed:
-            return [(xref, y) for y, _ in self.points]
-        return [(y, xref) for y, _ in self.points]
+            return [(xref, y) for y, _, w in self.points]
+        return [(y, xref) for y, _, w in self.points]
 
-    def add_point(self, point):
+    @property
+    def weights(self):
+        w = [p[2] for p in self.points]
+        if w.count(None):  # all points must have weights
+            return None
+        return np.asarray(w)
+
+    @weights.setter
+    def weights(self, value):
+        try:
+            if len(value) != len(self):
+                raise ValueError("Weights do not match length of trace")
+        except TypeError:  # single value was provided
+            self.points = deque([p[:2] + (value,)] for p in self.points)
+        else:
+            self.points = deque([p[:2] + (w,)] for p, w in zip(self.points, value))
+
+    def add_point(self, point, weight=None):
         """Add a point to the deque, at either end as appropriate"""
         point = self._verify_point(point)
         y = point[0]
 
         if y > self.top_limit:
-            self.points.append(point)
+            self.points.append(point + (weight,))
         elif y < self.bottom_limit:
-            self.points.appendleft(point)
+            self.points.appendleft(point + (weight,))
         else:
             # Should only add points at ends of range
             raise RuntimeError("Trying to insert point in middle of trace,"
                                f"{point}, top: {self.top_limit}, "
                                f"bottom: {self.bottom_limit}")
         self.last_point = point
+
+    def remove_point(self, point):
+        """Remove a point from the deque"""
+        index = [p[:2] for p in self.points].index(point)
+        self.points.remove(self.points[index])
 
     def predict_location(self, row, lookback=4, order=1):
         """Predict where the next peak will be in the tracing direction.
@@ -469,7 +501,6 @@ class Trace:
             include in the fit to predict where it's going.
         order: int
             order of fit function
-
         """
         # Save ourselves some trouble by quickly returning a dummy value if
         # this Trace is inactive
@@ -509,8 +540,8 @@ class Trace:
 
 @unpack_nddata
 def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
-                cwidth=5, rwidth=None, nsum=10, step=10, initial_tolerance=1.0,
-                max_shift=0.05, max_missed=5, func=NDStacker.median, viewer=None,
+                halfwidth=None, rwidth=None, nsum=10, step=10, initial_tolerance=None,
+                max_shift=0.05, max_missed=5, func=NDStacker.mean, viewer=None,
                 min_peak_value=None, min_line_length=0.):
     """
     This function traces features along one axis of a two-dimensional image.
@@ -538,8 +569,8 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
         Row/column to start trace (None => middle).
     initial : sequence
         Coordinates of peaks
-    cwidth : int
-        Width of centroid box in pixels.
+    halfwidth : int
+        half-width of centroid box in pixels.
     rwidth : int/None
         width of Ricker filter to apply to each collapsed 1D slice
     nsum : int
@@ -548,7 +579,8 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
         Step size along axis in pixels.
     initial_tolerance : float/None
         Maximum perpendicular shift (in pixels) between provided location and
-        first calculation of peak.
+        first calculation of peak. If None, then the start and initial values
+        will be used as the reference coordinates for each line.
     max_shift: float
         Maximum perpendicular shift (in pixels) from pixel to pixel.
     max_missed: int
@@ -563,14 +595,17 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
         Minimum amplitude of fit to be considered as a real detection. Peaks
         smaller than this value will be counted as a miss.
     min_line_length: float
-        Minimum length of traced feature (as a fraction of the tracing dimension length)
-        to be considered as a useful line.
+        Minimum length of traced feature (as a fraction of the tracing
+        dimension length) to be considered as a useful line.
 
     Returns
     -------
-    list of Trace objects, or an empty list if no peaks were recoverable
+    list of Trace objects, or an empty list if no peaks were recoverable.
+    These objects are *always* configured to return coordinates in (x, y) order.
     """
     log = logutils.get_logger(__name__)
+    if halfwidth is None:
+        raise ValueError('trace_lines(): halfwidth cannot be None')
 
     # Make life easier for the poor coder by transposing data if needed,
     # so that we're always tracing along columns
@@ -584,9 +619,15 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
         direction = "column"
 
     # Make a slice around a given row center. No bounds checking
-    # as that needs to be done by the calling code.
-    def _slice(center):
-        return slice(center - nsum // 2, center + nsum - nsum // 2)
+    # as that needs to be done by the calling code. If we use 0.5
+    # here to round, then mkslice(center_slice(_slice)) won't
+    # return the _slice, which would be a problem.
+    def mkslice(center):
+        start = int(center + 0.5) - nsum // 2
+        return slice(start, start + nsum)
+
+    def slice_center(_slice):
+        return 0.5 * (_slice.start + _slice.stop - 1)
 
     # Create profile for centering. This could just be the data (maybe
     # Ricker-filtered) but we use the SNR
@@ -597,20 +638,18 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
                             cwt_ricker(data, widths=[rwidth])[0], 0)
         return np.where(data / np.sqrt(var) > 0.5, data, 0)
 
-    halfwidth = cwidth // 2
     if start is None:
         start = ext_data.shape[0] // 2
         log.stdinfo(f"Starting trace at {direction} {start}")
-    else:  # just to be sure it's OK
-        start = int(min(max(start, nsum // 2), ext_data.shape[0] - nsum / 2))
 
     # Get accurate starting positions for all peaks if requested
     if initial_tolerance is None:
         initial_peaks = initial
     else:
-        data, mask, var = func(ext_data[_slice(start)],
+        start_slice = mkslice(start)
+        data, mask, var = func(ext_data[start_slice],
                                mask=None if ext_mask is None
-                               else ext_mask[_slice(start)], variance=None)
+                               else ext_mask[start_slice], variance=None)
         data = _profile_for_centering(data, var, rwidth)
 
         peaks = pinpoint_peaks(data, peaks=initial, mask=mask,
@@ -631,47 +670,54 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
     mask = np.zeros_like(data, dtype=DQ.datatype)
     var = np.empty_like(data)
 
-    # We're going to make lists of valid step centers to help later
-    step_centers_up = list(np.arange(start, ext_data.shape[0] - nsum / 2,
-                                     step, dtype=int))
-    step_centers_down = list(np.arange(start, nsum / 2, -step, dtype=int))
+    # Code like this so we don't care how the slice is made from the center
+    all_slices = [mkslice(s) for s in np.arange(start % step, ext_data.shape[0], step)]
+    if all_slices[0].start < 0:
+        all_slices = all_slices[1:]
+    if all_slices[-1].stop > ext_data.shape[0]:
+        all_slices = all_slices[:-1]
 
     # Eliminate blocks that are completely masked (e.g., chip gaps, bridges, amp5)
     # Also need to eliminate regions with only one valid column because NDStacker
     # can't compute the pixel-to-pixel variance and hence the S/N can't be calculated
     if ext_mask is not None:
-        for i, s in reversed(list(enumerate(step_centers_up))):
-            if np.bincount((ext_mask[_slice(s)] & DQ.not_signal).min(axis=1))[0] <= 1:
-                step_centers_up[i] = None
-        for i, s in reversed(list(enumerate(step_centers_down))):
-            if np.bincount((ext_mask[_slice(s)] & DQ.not_signal).min(axis=1))[0] <= 1:
-                step_centers_down[i] = None
+        for i, _slice in enumerate(all_slices):
+            if np.bincount(ext_mask[_slice].min(axis=1))[0] <= 1:
+                all_slices[i] = None
+
+    try:
+        start_index = all_slices.index(mkslice(start))
+    except ValueError:
+        log.debug(f"Starting location {start} is too close to "
+                  f"edge of array for nsum={nsum}")
+        # Regardless of how many traces there are, they share the same start
+        # position so none are valid.
+        return []
 
     # If tracing vertically-dispersed data the coordinates in the Trace will
     # be in (y, x) order and since we need (x, y) elsewhere we reverse them here.
     traces = [Trace((start, peak),
                     reverse_returned_coords=(axis == 0))
               for peak in initial_peaks]
-    for direction, step_centers in zip((1, -1), (step_centers_up, step_centers_down)):
+    for direction in (1, -1):
         for trace in traces:
             trace.last_point = trace.starting_point
             trace.active = True
             trace.steps_missed = 0
-        step_index = 0
-        latest_lookback_step = 0
+        step_index = start_index
+        latest_lookback_step = step_index
 
         while any(t.active for t in traces):
-            # Our first point is step_index=1. The point step_index=0 is the
-            # start location, so we don't want to recompute that, but it's in
-            # the step_centers so we can go back and bin up including it.
-            step_index += 1
+            # We don't want to recompute at the start, but we can go back
+            # and use that slice to bin the data for higher S/N
+            step_index += direction
 
             # Reached the bottom or top?
-            if step_index >= len(step_centers):
+            if not 0 <= step_index < len(all_slices):
                 break
 
             # Are we going across a "dead zone", which we don't bin across?
-            if step_centers[step_index] is None:
+            if all_slices[step_index] is None:
                 latest_lookback_step = None
                 continue
             elif latest_lookback_step is None:  # recover from "dead zone"
@@ -681,14 +727,15 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
             # multiple steps because we have lost lines but they're not
             # completely lost yet.
             lookback = min(max(t.steps_missed for t in traces if t.active),
-                           step_index - latest_lookback_step)
+                           abs(step_index - latest_lookback_step))
 
             # Make multiple arrays covering nsum to nsum*(largest_missed+1) rows
             # There's always at least one such array
             for i in range(lookback + 1):
-                slices = [_slice(step_centers[step_index-j]) for j in range(i+1)]
+                slices = [all_slices[step_index-direction*j] for j in range(i+1)]
                 d, m, v = func(np.concatenate(list(ext_data[s] for s in slices)),
-                               mask=None if ext_mask is None else np.concatenate(list(ext_mask[s] for s in slices)),
+                               mask=None if ext_mask is None else
+                               np.concatenate(list(ext_mask[s] for s in slices)),
                                variance=None)
                 data[i] = _profile_for_centering(d, v, rwidth)
                 if m is not None:
@@ -703,11 +750,13 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
                     if not trace.active:
                         continue
 
-                    for j in range(min(trace.steps_missed + 1, data.shape[0])):
-                        effective_ypos = step_centers[step_index] - 0.5 * j * step
+                    for j in range(min(trace.steps_missed + 1, lookback + 1)):
+                        these_steps = (slice(step_index - j, step_index + 1)
+                                       if direction == 1 else slice(step_index, step_index + j + 1))
+                        effective_ypos = np.mean([slice_center(s)
+                                                  for s in all_slices[these_steps]])
                         shift_tol = max_shift * abs(effective_ypos - trace.last_point[0])
                         predicted_peak = trace.predict_location(effective_ypos, order=1)
-                        peak_tol = 5
 
                         peaks, peak_values = pinpoint_peaks(
                             data[j], peaks=[predicted_peak], mask=mask[j],
@@ -715,8 +764,7 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
 
                         if (not peaks or min_peak_value is not None and
                                 peak_values[0] < min_peak_value or
-                                abs(peaks[0] - trace.last_point[1]) > shift_tol or
-                                abs(peaks[0] - predicted_peak) > peak_tol):
+                                abs(peaks[0] - trace.last_point[1]) > shift_tol):
                             continue
 
                         # A valid peak has been found
@@ -746,8 +794,6 @@ def trace_lines(data, axis, mask=None, variance=None, start=None, initial=None,
                 # We really shouldn't get here as this should be handled by
                 # the step_centers creation
                 latest_lookback_step = None
-
-        step *= -1
 
     # Remove short lines
     min_length_pixels = min_line_length * ext_data.shape[0]
@@ -794,13 +840,13 @@ def trace_aperture(ext, location, ui_params, viewer=None, apnum=None):
             at.boxcar(spectrum[good], size=20))]
     if apnum is not None:
         log.stdinfo(f"{ext.filename}: Starting trace of "
-                    f"aperture {apnum+1} at pixel {start+1}")
+                    f"aperture {apnum} at pixel {start+1}")
 
     # The coordinates are always returned as (x-coords, y-coords)
     return trace_lines(
         ext,
         axis=dispaxis,
-        cwidth=5,
+        halfwidth=2,
         initial=[location],
         initial_tolerance=None,
         max_missed=ui_params.values['max_missed'],

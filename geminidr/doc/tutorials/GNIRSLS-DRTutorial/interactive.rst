@@ -50,6 +50,20 @@ To activate the interactive mode for a specific primitive, eg. ``traceApertures`
      redux.files = [files_to_reduce]
      redux.uparms = dict([('traceApertures:interactive', True)])
 
+.. _jupyter:
+
+Jupyter notebooks
+=================
+If you are using Jupyter notebooks, add these two lines at the top of your
+notebook to enable the interactive tools::
+
+    import nest_asyncio
+    nest_asyncio.apply()
+
+We do not formally support Jupyter notebooks but adding those two lines appears
+to work.
+
+
 
 .. _ui_layout:
 
@@ -206,10 +220,6 @@ The ``normalizeFlat`` tool simply fits a function to the flat signal to
 normalize it.  The slider at the top defaults to
 the center of the pixel array.  You can select a different row if you want.
 
-The normalization steps generally works well without any interaction but the
-tool is there to visualize the fits if you suspect a problem and need to
-correct for it.  The main difficulty in GNIRS data is the odd-even effect that
-results from different gains between odd and even columns.
 
 .. _ui_skycorrectfromslit:
 

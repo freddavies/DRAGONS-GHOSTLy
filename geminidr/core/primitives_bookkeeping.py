@@ -8,6 +8,7 @@ from copy import deepcopy
 from itertools import zip_longest
 
 import astrodata, gemini_instruments
+from astrodata.provenance import clone_provenance, clone_history
 
 from gempy.gemini import gemini_tools as gt
 from recipe_system.utils.decorators import parameter_override, capture_provenance
@@ -169,6 +170,9 @@ class Bookkeeping(PrimitivesBASE):
                     # extensions than ad2.
                     adout.append(ext1)
 
+            clone_provenance(ad2.PROVENANCE, adout)
+            clone_history(ad2.HISTORY, adout)
+
             adoutputs.append(adout)
 
         return adoutputs
@@ -321,6 +325,10 @@ class Bookkeeping(PrimitivesBASE):
         tags: str/None
             Tags which frames must match to be selected
         """
+        log = self.log
+        log.debug(gt.log_message("primitive", self.myself(), "starting"))
+        log.debug("Removing inputs with tags: {}".format(tags))
+
         if tags is None:
             return adinputs
         required_tags = tags.split(',')
@@ -333,6 +341,13 @@ class Bookkeeping(PrimitivesBASE):
         #adoutputs = [ad for ad in adinputs
         #             if set(required_tags).issubset(ad.tags)]
         adoutputs = [ad for ad in adinputs if not (set(required_tags) & ad.tags)]
+        log.debug("Remaining files:")
+        if adoutputs:
+            for ad in adoutputs:
+                log.debug("    {}".format(ad.filename))
+        else:
+            log.debug("    No files remaining")
+
         return adoutputs
 
     def selectFromInputs(self, adinputs=None, tags=None):
@@ -345,6 +360,10 @@ class Bookkeeping(PrimitivesBASE):
         tags: str/None
             Tags which frames must match to be selected
         """
+        log = self.log
+        log.debug(gt.log_message("primitive", self.myself(), "starting"))
+        log.debug("Selecting inputs with tags: {}".format(tags))
+
         if tags is None:
             return adinputs
         required_tags = tags.split(',')
@@ -357,6 +376,13 @@ class Bookkeeping(PrimitivesBASE):
         #adoutputs = [ad for ad in adinputs
         #             if set(required_tags).issubset(ad.tags)]
         adoutputs = [ad for ad in adinputs if set(required_tags) & ad.tags]
+        if adoutputs:
+            log.debug("Selected files:")
+            for ad in adoutputs:
+                log.debug("    {}".format(ad.filename))
+        else:
+            log.debug("    No files selected")
+
         return adoutputs
 
     def showInputs(self, adinputs=None, purpose=None):
@@ -486,7 +512,8 @@ class Bookkeeping(PrimitivesBASE):
             index_order = list(reversed(index_order))
         return [adinputs[i] for i in index_order]
 
-    def transferAttribute(self, adinputs=None, suffix=None, source=None, attribute=None):
+    def transferAttribute(self, adinputs=None, suffix=None, source=None, attribute=None,
+                          new_name=None):
         """
         This primitive takes an attribute (e.g., "mask", or "OBJCAT") from
         the AD(s) in another ("source") stream and applies it to the ADs in
@@ -501,6 +528,8 @@ class Bookkeeping(PrimitivesBASE):
             name of stream containing ADs whose attributes you want
         attribute: str
             attribute to transfer from ADs in other stream
+        new_name: str/None
+            new name for the attribute being transferred (if None, keep the name)
         """
         log = self.log
         log.debug(gt.log_message("primitive", self.myself(), "starting"))
@@ -515,7 +544,12 @@ class Bookkeeping(PrimitivesBASE):
                         f"{len(adinputs)} and {source_length}")
             return adinputs
 
-        log.stdinfo(f"Transferring attribute '{attribute}' from stream {source}")
+        msg = f"Transferring attribute '{attribute}' from stream {source}"
+        if new_name is None:
+            new_name = attribute
+        else:
+            msg += f" onto '{new_name}'"
+        log.stdinfo(msg)
 
         # Keep track of whether we find anything to transfer, as failing to
         # do so might indicate a problem and we should warn the user
@@ -525,7 +559,7 @@ class Bookkeeping(PrimitivesBASE):
             # Attribute could be top-level or extension-level
             # Use deepcopy so references to original object don't remain
             try:
-                setattr(ad1, attribute,
+                setattr(ad1, new_name,
                         deepcopy(getattr(ad2, attribute)))
             except (AttributeError, ValueError):  # data, mask, are gettable not settable
                 pass
@@ -536,7 +570,7 @@ class Bookkeeping(PrimitivesBASE):
 
             for ext1, ext2 in zip(ad1, ad2):
                 if hasattr(ext2, attribute):
-                    setattr(ext1, attribute,
+                    setattr(ext1, new_name,
                             deepcopy(getattr(ext2, attribute)))
                     found = True
             if found:
@@ -591,7 +625,7 @@ class Bookkeeping(PrimitivesBASE):
                               "written to the same name {}".format(
                         params['outfilename'])
                     log.critical(message)
-                    raise OSError(message)
+                    raise RuntimeError(message)
                 else:
                     outfilename = params['outfilename']
             else:

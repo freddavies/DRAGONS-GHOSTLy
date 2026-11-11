@@ -1,4 +1,4 @@
-# Copyright(c) 2006,2016-2025 Association of Universities for Research in Astronomy, Inc.
+# Copyright(c) 2006,2016-2026 Association of Universities for Research in Astronomy, Inc.
 
 """
 The astroTools module contains astronomy specific utility functions
@@ -6,6 +6,7 @@ The astroTools module contains astronomy specific utility functions
 
 from copy import deepcopy
 import os
+import re
 import numpy as np
 from scipy import interpolate, optimize
 
@@ -13,6 +14,11 @@ from astropy import units as u
 from astropy import stats
 from astropy.coordinates import Angle
 from astropy.modeling import models, fitting
+
+from gempy.library.cython_utils import masked_median
+from gempy.utils import logutils
+
+log = logutils.get_logger(__name__)
 
 
 class Magnitude:
@@ -176,7 +182,8 @@ def calculate_pixel_edges(centers):
 def calculate_scaling(x, y, sigma_x=None, sigma_y=None, sigma=3, niter=2):
     """
     Determine the optimum value by which to scale inputs so that they match
-    a set of reference values
+    a set of reference values. This works on a pixel-by-pixel basis so can
+    only be used for relatively small arrays.
 
     Parameters
     ----------
@@ -227,7 +234,7 @@ def calculate_scaling(x, y, sigma_x=None, sigma_y=None, sigma=3, niter=2):
         fitting.LinearLSQFitter(), outlier_func=stats.sigma_clip, niter=niter,
         sigma=sigma)
     m_final, _ = fit_it(m_init, x, y, weights=weights)
-    return m_final.factor.value
+    return float(m_final.factor.value)  # don't force upcasting in N2 arith.
 
 
 def divide0(numerator, denominator):
@@ -348,6 +355,198 @@ def fit_spline_to_data(data, mask=None, variance=None, k=3):
                 iterations += 1
 
     return spline
+
+
+def optimal_normalization(nddata_list, num_ext=1, separate_ext=True,
+                          statsec=None, return_scaling=False, maxiter=1000000):
+    """
+    Compute a set of normalization offsets/scale factors to give a list
+    of NDAstroData objects the same overall value. This is done by
+    comparing the differences/ratios of all the unmasked pixels that
+    overlap between each pair of images, and then computing the optimum
+    values.
+
+    The function can cope with multi-detector instruments by only comparing
+    the same detector in each image; in such a case, separate normalization
+    factors can be calculated for each detector, or a single overall
+    normalization can be calculated. The `nddata_list` should be ordered
+    with all `num_ext` detectors from the first image, then from the second
+    image, and so on.
+
+    NB. All the NDAstroData objects must have the same dimensionality!
+
+    This is designed to work on arbitrarily large arrays in a memory-efficient
+    manner by repeatedly using the same memory to place the intermediate
+    results.
+
+    Parameters
+    ----------
+    nddata_list: list
+        list of NDAstroData objects, all the same shape
+    num_ext: int
+        number of independent fields to compute normalization for
+    separate_ext: bool
+        compute normalization for each set of extensions separately?
+    statsec: tuple of slices/None
+        section of each image to use for the normalization (None => full image)
+    return_scaling: bool
+        return scaling factors rather than additive offsets?
+    maxiter: int
+        maximum number of iterations for the minimization
+
+    Returns
+    -------
+    ndarray: additive offsets or scaling factors to scale the second and
+        subsequent NDAstroData objects to match the first one
+    """
+    if statsec is not None:
+        ext_sizes = [np.prod([s.stop - s.start for s in statsec])] * num_ext
+    else:
+        ext_sizes = [ndd.size for ndd in nddata_list[:num_ext]]
+    result_size = max(ext_sizes) if separate_ext else sum(ext_sizes)
+
+    # Prepare all the arrays we need
+    nimg = len(nddata_list) // num_ext
+    offset_matrix = np.zeros((nimg, nimg))
+    weight_matrix = np.zeros_like(offset_matrix)
+
+    # We're only offsetting images [1:N] (N-1 images)
+    x = np.zeros((nimg - 1,))
+
+    separate_ext = separate_ext and (num_ext > 1)
+    results = np.empty((num_ext, nimg) if separate_ext else (nimg,),
+                       dtype=np.float64)
+
+    tmp_data = np.empty((2, result_size), dtype=np.float32)
+    tmp_mask = np.empty((2, result_size), dtype=np.uint16)
+
+    def load_data(ndd_list, data_out, mask_out):
+        start = 0
+        for ndd in ndd_list:
+            size = ndd.size if statsec is None else ext_sizes[0]  # all the same
+            data_out[start:start+size] = (ndd.window[:] if statsec is None
+                                          else ndd.window[statsec]).data.ravel()
+            try:
+                mask_out[start:start+size] = (ndd.window[:] if statsec is None
+                                              else ndd.window[statsec]).mask.ravel()
+            except AttributeError:  # mask is None
+                mask_out[start:start+size] = 0
+            start += size
+
+    for n in range(num_ext if separate_ext else 1):
+        for i in range(nimg):
+            if separate_ext:
+                load_data([nddata_list[i*num_ext + n]],
+                          tmp_data[0], tmp_mask[0])
+                result_size = ext_sizes[n]
+            else:
+                load_data(nddata_list[i*num_ext:(i+1)*num_ext],
+                          tmp_data[0], tmp_mask[0])
+            if return_scaling:
+                tmp_mask[0] |= tmp_data[0] <= 0  # avoid log(0) or log(negative)
+
+            for j in range(i+1, nimg):
+                if separate_ext:
+                    load_data([nddata_list[j*num_ext + n]],
+                              tmp_data[1], tmp_mask[1])
+                else:
+                    load_data(nddata_list[j*num_ext:(j+1) * num_ext],
+                              tmp_data[1], tmp_mask[1])
+                if return_scaling:
+                    tmp_mask[1] |= tmp_data[1] <= 0  # avoid log(0) or log(negative)
+
+                tmp_mask[1] |= tmp_mask[0]  # combine masks
+
+                weight_matrix[i, j] = np.sum(tmp_mask[1, :result_size] == 0)
+
+                if return_scaling:
+                    with np.errstate(all="ignore"):
+                        tmp_data[1] /= tmp_data[0]
+                else:
+                    tmp_data[1] -= tmp_data[0]
+
+                med = masked_median(tmp_data[1], tmp_mask[1], result_size)
+                offset_matrix[i, j] = -(np.log(med) if return_scaling else med)
+                if weight_matrix[i, j] == 0:
+                    msg = ("No overlapping unmasked pixels found between "
+                           f"input frames {i} and {j}")
+                    if separate_ext:
+                        msg += f" for extension {n}"
+                    msg += " - they will not be normalized with respect to each other."
+                    log.warning(msg)
+
+        # Scale the offsets so they're O(1) since minimization can fail if
+        # the value to be optimized is too large. See:
+        # https://stackoverflow.com/questions/24767191/scipy-is-not-optimizing-and-returns-desired-error-not-necessarily-achieved-due
+        # This won't be a problem if we're scaling because the logs of all
+        # scaling factors will be O(1)
+        result_scaling = 1 if return_scaling else np.max(abs(offset_matrix))
+        offset_matrix /= result_scaling
+
+        def minfunc(x):
+            offsets = np.r_[[0], x]  # the first image is untouched
+            val = np.sum(weight_matrix * (offset_matrix + offsets[:, np.newaxis] -
+                                          offsets) ** 2)
+            return val
+
+        res = optimize.minimize(minfunc, x, options={'maxiter': maxiter})
+        # Include the zero offset for the first image
+        factors = np.r_[0.0, res.x]
+        if not res.success:
+            log.warning("Normalization failed: {}".format(res.message))
+
+        if separate_ext:
+            # Reset the offset matrix for the next extension
+            offset_matrix.fill(0)
+            weight_matrix.fill(0)
+            results[n] = factors * result_scaling
+        else:
+            results[:] = factors * result_scaling
+
+    return np.exp(results) if return_scaling else results
+
+
+def spectral_type_to_temperature(sp_type):
+    """
+    Convert a spectral type to an effective temperature. This uses the
+    tabulated values of Erik Mamajek Version 2019.3.22
+    (https://www.pas.rochester.edu/~emamajek/EEM_dwarf_UBVIJHK_colors_Teff.txt)
+
+    We do not use the luminosity class in the calculation, since fig. 5 of
+    de Jager & Nieuwenhuijzen (1987, A&A 177, 217) shows that the effective
+    temperature is not strongly dependent on luminosity class for spectral
+    types around A0, which we expect observers to use.
+
+    The Mamjek table is include here as a LUT because this function will only
+    be called once per reduction, so speed isn't critical and it keeps
+    everything in one place in case this is revisited later.
+
+    Parameters
+    ----------
+    spectral_type : str
+        a string describing the spectral type, e.g. 'G2V', 'K5III', etc.
+
+    Returns
+    -------
+    float: the effective temperature in Kelvin
+    """
+    m = re.match(r'^([OBAFGKM])(\d(?:.\d)?)(I*V?[ab]*\+?)', sp_type)
+    if not m:
+        raise ValueError(f"Invalid spectral type: {sp_type}")
+    cls, subcls, lcls = m.groups()
+    subcls = float(subcls)
+
+    # Convert spectral type to a number, where O3=3, B0=10, A0=20, etc.
+    sp_numtype = "OBAFGKM".index(cls) * 10 + subcls
+    mamajek_points = np.array(
+        [(3, 46000), (7.5, 35000), (8, 34500), (9, 32500), (10, 31500),
+         (13, 17000), (17, 14000), (18, 12500), (19, 10700), (19.5, 10400),
+         (20, 9700), (21, 9200), (22, 8840), (23, 8550), (24, 8270),
+         (25, 8080), (26, 8000), (27, 7800), (28, 7500), (29, 7440),
+         (30, 7220), (31, 7030), (32, 6810), (40, 5920), (51.5, 5140),
+         (57, 4070), (60, 3870), (69, 2400)]).T
+    teff = np.interp(sp_numtype, mamajek_points[0], mamajek_points[1])
+    return np.round(teff / 10) * 10  # round to nearest 10 K
 
 
 def std_from_pixel_variations(array, separation=5, subtract_linear_fits=True,
@@ -473,8 +672,12 @@ def parse_user_regions(regions, dtype=int, allow_step=False):
             ranges.append((None, None))
             continue
         try:
-            values = [dtype(x) if x else None
-                      for x in range_.replace("-", ":", 1).split(":")]
+            if range_.startswith("-"):
+                values = [dtype(x) if x else None
+                          for x in ("-"+range_[1:].replace("-", ":", 1)).split(":")]
+            else:
+                values = [dtype(x) if x else None
+                          for x in range_.replace("-", ":", 1).split(":")]
             assert len(values) in (1, 2, 2+allow_step)
             if len(values) > 1 and values[0] is not None and values[1] is not None and values[0] > values[1]:
                 values[0], values[1] = values[1], values[0]
@@ -682,6 +885,39 @@ def transpose_if_needed(*args, transpose=False, section=slice(None)):
                 else arg.T[section] if transpose else arg[section] for arg in args)
 
 
+def weighted_median(data, weights=None):
+    """
+    Calculate the weighted median of a dataset.
+
+    Parameters
+    ----------
+    data: array-like
+        the data to calculate the median of
+    weights: array-like/None
+        relative weights of the data (None => equal weights)
+
+    Returns
+    -------
+    float: the weighted median value
+    """
+    if weights is None:
+        return np.ma.median(data)
+
+    sorted_indices = np.argsort(data)
+    sorted_data = data[sorted_indices]
+    sorted_weights = weights[sorted_indices]
+
+    cumulative_weights = np.cumsum(sorted_weights)
+    total_weight = cumulative_weights[-1]
+    half_weight = 0.5 * total_weight
+
+    median_index = np.searchsorted(cumulative_weights, half_weight)
+    if cumulative_weights[median_index] == half_weight:
+        return 0.5 * (sorted_data[median_index] + sorted_data[median_index + 1])
+
+    return sorted_data[median_index]
+
+
 def weighted_sigma_clip(data, weights=None, sigma=3, sigma_lower=None,
                         sigma_upper=None, maxiters=5):
     """
@@ -734,37 +970,6 @@ def weighted_sigma_clip(data, weights=None, sigma=3, sigma_lower=None,
         niter += 1
 
     return np.ma.masked_array(data, mask=~good)
-
-
-def clipped_mean(data):
-    num_total = len(data)
-    mean = data.mean()
-    sigma = data.std()
-
-    if num_total < 3:
-        return mean, sigma
-
-    num = num_total
-    clipped_data = data
-    clip = 0
-    while num > 0.5 * num_total:
-        # CJS: edited this as upper limit was mean+1*sigma => bias
-        clipped_data = data[(data < mean + 3*sigma) & (data > mean - 3*sigma)]
-        num = len(clipped_data)
-
-        if num > 0:
-            mean = clipped_data.mean()
-            sigma = clipped_data.std()
-        elif clip == 0:
-            return mean, sigma
-        else:
-            break
-
-        clip += 1
-        if clip > 10:
-            break
-
-    return mean, sigma
 
 
 # The following functions and classes were borrowed from STSCI's spectools

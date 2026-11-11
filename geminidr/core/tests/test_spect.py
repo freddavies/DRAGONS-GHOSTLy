@@ -28,6 +28,7 @@ Notes
 """
 
 import os
+import logging
 
 import numpy as np
 import pytest
@@ -37,22 +38,80 @@ from astropy.io import fits
 from astropy.modeling import models
 from scipy import optimize
 
+from gwcs import coordinate_frames as cf
+from gwcs.wcs import WCS as gWCS
+
 from specutils.utils.wcs_utils import air_to_vac
 
 import astrodata, gemini_instruments
-from astrodata.testing import ad_compare
+from astrodata.testing import ad_compare, assert_most_close, download_from_archive
 from gempy.library import astromodels as am
-from gempy.library.wavecal import LineList
 from gempy.library.config.config import FieldValidationError
 from geminidr.core import primitives_spect
 from geminidr.f2.primitives_f2_longslit import F2Longslit
+from geminidr.gmos.primitives_gmos_longslit import GMOSLongslit
 from geminidr.niri.primitives_niri_image import NIRIImage
 from geminidr.niri.primitives_niri_longslit import NIRILongslit
 from geminidr.gnirs import primitives_gnirs_longslit
 from geminidr.gnirs.primitives_gnirs_longslit import GNIRSLongslit
+from geminidr.gemini.lookups import DQ_definitions as DQ
 from recipe_system.mappers.primitiveMapper import PrimitiveMapper
 
 # -- Tests --------------------------------------------------------------------
+
+def test_determine_slit_edges_and_masking():
+    """
+    Test the determineSlitEdges() primitive. This is a simple test that
+    creates a fake slit with a known edge and checks that the primitive
+    correctly identifies the edge and returns the correct values.
+
+    Since we're putting the edge between pixels, the returned values
+    should be the pixel value +/- 0.5.
+
+    Since we've created a nice synthetic example, we also test that
+    maskBeyondSlit() correctly masks the pixels outside the slit.
+    """
+    # We download a raw file rather than use a pre-processed one
+    ad = astrodata.open(download_from_archive("N20240116S0104.fits"))
+    p = GNIRSLongslit([ad])
+    p.prepare()
+    # Create a perfect artificial image
+    slitlen = int(ad.MDF['slitlength_pixels'][0])
+    data = np.zeros_like(ad[0].data)
+    x1 = (data.shape[1] - slitlen) // 2
+    x2 = x1 + slitlen
+    data[:, x1:x2] = 5000
+    ad[0].data = data
+    y = np.arange(data.shape[0])
+
+    # Add noise or else it doesn't find anything
+    ad[0].data += 10 * np.random.normal(size=data.shape)
+
+    p.determineSlitEdges()
+
+    slitedge = ad[0].SLITEDGE
+    assert len(slitedge) == 2
+    for row, expected in zip(slitedge, (x1-0.5, x2-0.5)):
+        m = am.table_to_model(row)
+        edgeval = m(y)
+        # Tolerance can be relaxed since we're mainly trying to check
+        # for the half-pixel issue
+        np.testing.assert_allclose(edgeval, expected, atol=0.1)
+
+    p.maskBeyondSlit(debug_min_illuminated_fraction=0.9)
+
+    assert ad[0].mask is not None
+    expected = np.r_[[DQ.unilluminated]*x1, [DQ.good]*slitlen,
+                     [DQ.unilluminated]*(data.shape[1]-x2)].astype(DQ.datatype)
+    for i, maskrow in enumerate(ad[0].mask):
+        assert list(maskrow).count(DQ.good) == slitlen
+        try:
+            np.testing.assert_equal(maskrow, expected)
+        except AssertionError:
+            xx1 = maskrow.argmin()
+            xx2 = data.shape[1] - maskrow[::-1].argmin()
+            msg = f"Row {i} illuminated slice {xx1}:{xx2} (expected {x1}:{x2})"
+            raise AssertionError(msg)
 
 
 def test_extract_1d_spectra():
@@ -399,6 +458,65 @@ def test_sky_correct_from_slit_with_multiple_sources():
     np.testing.assert_allclose(ad_out[0].data, source, atol=1e-3)
 
 
+def test_sky_correct_from_slit_negative_beams(caplog):
+    # Input Parameters ----------------
+    width = 200
+    height = 100
+    np.random.seed(0)
+
+    ad = create_zero_filled_fake_astrodata(height, width)
+    # We need noise or get_extrema() doesn't work
+    ad[0].data += np.random.randn(*ad[0].data.shape)
+
+    for i in range(1, 4):
+        source_model_parameters = {'c0': 0.25 * i * height, 'c1': 0.0}
+        source = 100 * fake_point_source_spatial_profile(
+            height, width, source_model_parameters, fwhm=0.05 * height)
+        if i == 2:
+            ad[0].data += source
+        else:
+            ad[0].data -= 0.5 * source
+
+    ad[0].APERTURE = get_aperture_table(height, width)
+
+    # Running the test ----------------
+    caplog.set_level(logging.DEBUG)
+    p = primitives_spect.Spect([])
+    ad.phu[p.timestamp_keys['subtractSky']] = '2023-10-01T00:00:00.000'
+    ad_out = p.skyCorrectFromSlit([ad], function="chebyshev", order=2,
+                                  grow=2, niter=3, lsigma=3, hsigma=3,
+                                  aperture_growth=2)[0]
+
+    passing = False
+    for record in caplog.records:
+        if 'beam offsets' in record.message:
+            fields = record.message.strip().split()
+            assert len(fields) == 5, "Not 2 beam offsets found"
+            passing = np.allclose(sorted([float(x) for x in fields[-2:]]),
+                                  (-0.25 * height, 0.25 * height), atol=0.1)
+    assert passing
+
+@pytest.mark.preprocessed_data
+def test_sky_correct_from_slit_negative_beams_gnirsxd_nobeam(path_to_inputs, caplog):
+
+    ad = astrodata.open(os.path.join(path_to_inputs, 'N20191013S0006_aperturesFound.fits'))
+
+    caplog.set_level(logging.DEBUG)
+    p = primitives_spect.Spect([])
+    ad_out = p.skyCorrectFromSlit([ad], function="chebyshev", order=1,
+                                  grow=1, niter=3, lsigma=3, hsigma=3,
+                                  aperture_growth=1)[0]
+
+    passing = True
+    for record in caplog.records:
+        if 'beam offsets' in record.message:
+            passing = False
+            # There should be no negative beams found for this dataseet
+
+    assert passing
+
+
+
 @pytest.mark.preprocessed_data
 @pytest.mark.parametrize('in_shift', [0, -1.2, 2.75])
 def test_adjust_wavelength_zero_point_shift(in_shift, change_working_dir,
@@ -513,6 +631,26 @@ def test_adjust_wavelength_zero_point_controlled(filename, center, shift,
 
 
 @pytest.mark.preprocessed_data
+def test_determine_wavelength_solution_exits_with_no_solution_in_sq(path_to_inputs):
+    """Primitive should crash in SQ mode without a solution"""
+    ad = astrodata.open(os.path.join(path_to_inputs, "S20260331S0149_mosaic.fits"))
+    p = GMOSLongslit([ad])
+    p.mode = "sq"  # it's the default, but just to be sure
+    with pytest.raises(RuntimeError):
+        p.determineWavelengthSolution()
+
+
+@pytest.mark.preprocessed_data
+def test_determine_wavelength_solution_continues_with_no_solution_in_qa(path_to_inputs, caplog):
+    """Primitive should crash in SQ mode without a solution"""
+    ad = astrodata.open(os.path.join(path_to_inputs, "S20260331S0149_mosaic.fits"))
+    p = GMOSLongslit([ad])
+    p.mode = "qa"
+    p.determineWavelengthSolution()
+    assert any(record.levelname == 'WARNING' for record in caplog.records)
+
+
+@pytest.mark.preprocessed_data
 @pytest.mark.parametrize('in_file,instrument',
                          [# GNIRS 111/mm LongBlue, off right edge of detector
                           ('N20121118S0375', 'GNIRS'),
@@ -585,6 +723,40 @@ def test_slit_rectification(filename, instrument, change_working_dir,
         np.testing.assert_allclose(ad_out[0].SLITEDGE[coeff], 0, atol=0.25)
 
 
+@pytest.mark.parametrize("gnirs1d", [np.ones((1000,), dtype=np.float32),
+                                     np.arange(1000, dtype=np.float32)],
+                         indirect=True)
+@pytest.mark.parametrize("wavescale", ["linear", "loglinear"])
+def test_resample1d_conserve(gnirs1d, wavescale):
+    """
+    Simple test to resample a synthetic 1D spectrum with a linear wavelength
+    solution to linear and loglinear and check that the flux is conserved.
+    """
+    gnirs1d[0].hdr['BUNIT'] = 'electron'
+    p = GNIRSLongslit([gnirs1d])
+    sum_before = gnirs1d[0].data.sum()
+    adout = p.resampleToCommonFrame(output_wave_scale=wavescale).pop()
+    sum_after = adout[0].data.sum()
+    # Tolerance allows for edge effects
+    assert sum_after == pytest.approx(sum_before, rel=0.002)
+
+
+@pytest.mark.parametrize("gnirs1d", [np.arange(1000, 2000, dtype=np.float32)],
+                         indirect=True)
+@pytest.mark.parametrize("wavescale", ["linear", "loglinear"])
+def test_resample1d_interpolate(gnirs1d, wavescale):
+    """
+    Simple test to resample a synthetic 1D spectrum with a linear wavelength
+    solution to linear and loglinear and check that the data are interpolated.
+    The input spectrum has signal=wavelength so it's easy to check the result.
+    """
+    gnirs1d[0].hdr['BUNIT'] = 'W / (m2 AA)'  # will interpolate
+    p = GNIRSLongslit([gnirs1d])
+    adout = p.resampleToCommonFrame(output_wave_scale=wavescale).pop()
+    waves = adout[0].wcs(np.arange(adout[0].data.size))
+    assert_most_close(waves, adout[0].data, max_miss=2, rtol=1e-5)
+
+
 def test_trace_apertures():
     # Input parameters ----------------
     width = 400
@@ -646,7 +818,7 @@ def test_flux_conservation_consistency(astrofaker, caplog, unit,
     warning_given = any(record.levelname == 'WARNING' for record in caplog.records)
     assert warn == warning_given
 
-
+@pytest.mark.skip("This function is now part of _get_airglow_linelist() in primitives_telluric")
 @pytest.mark.preprocessed_data
 @pytest.mark.regression
 def test_get_sky_spectrum(path_to_inputs, path_to_refs):
@@ -664,7 +836,8 @@ def test_get_sky_spectrum(path_to_inputs, path_to_refs):
     ref_refplot_spec_f2 = np.loadtxt(
         os.path.join(path_to_refs, "S20180114S0104_refplot_spec.dat"))
 
-    np.testing.assert_allclose(ref_refplot_spec_f2, refplot_data_f2["refplot_spec"], atol=1e-3)
+    np.testing.assert_allclose(ref_refplot_spec_f2[:, 0], refplot_data_f2["refplot_spec"][:, 0], atol=1e-3)
+    np.testing.assert_allclose(ref_refplot_spec_f2[:, 1], refplot_data_f2["refplot_spec"][:, 1], atol=0.25)  # max numerical diff in flux with numpy 2
 
 
 def test_resample_spec_table():
@@ -749,6 +922,22 @@ def test_transfer_distortion_model(change_working_dir, path_to_inputs, path_to_r
 
 # --- Fixtures and helper functions -------------------------------------------
 
+@pytest.fixture
+def gnirs1d(request, astrofaker):
+    ad = astrofaker.create('GNIRS', mode="SPECT")
+    ad.init_default_extensions()
+    data = request.param
+    mask = np.zeros_like(data, dtype=np.uint16)
+    variance = np.ones_like(data, dtype=np.float32)
+    ad[0].reset(data=data, mask=mask, variance=variance)
+    wave_model = models.Shift(1000) | models.Scale(1)
+    input_frame = astrodata.wcs.pixel_frame(1)
+    output_frame = cf.SpectralFrame(axes_order=(0,), unit=u.nm,
+                                    axes_names=("WAVE",))
+    ad[0].wcs = gWCS([(input_frame, wave_model),
+                      (output_frame, None)])
+    return ad
+
 
 def create_zero_filled_fake_astrodata(height, width):
     """
@@ -768,7 +957,7 @@ def create_zero_filled_fake_astrodata(height, width):
     """
     astrofaker = pytest.importorskip("astrofaker")
 
-    data = np.zeros((height, width))
+    data = np.zeros((height, width), dtype=np.float32)
 
     hdu = fits.ImageHDU()
     hdu.header['CCDSUM'] = "1 1"

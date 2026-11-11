@@ -122,13 +122,13 @@ def use_keyword_if_prepared(fn):
     if this exists in all the headers (if the keyword is missing, it will
     execute the code in the descriptor method).
     """
-    def gn(self):
+    def gn(self, **kwargs):
         if "PREPARED" in self.tags:
             try:
                 return self.hdr[self._keyword_for(fn.__name__)]
             except (KeyError, AttributeError):
                 pass
-        return fn(self)
+        return fn(self, **kwargs)
     return gn
 
 
@@ -341,6 +341,11 @@ class AstroDataGemini(AstroData):
     def _type_extracted(self):
         if 'EXTRACT' in self.phu:
             return TagSet(['EXTRACTED'])
+
+    @astro_data_tag
+    def _type_telluric(self):
+        if self.phu.get('PROCTELL'):
+            return TagSet(['TELLURIC', 'CAL'])
 
     def _ra(self):
         """
@@ -2119,7 +2124,7 @@ class AstroDataGemini(AstroData):
             if ext.wcs is None:
                 return None
             yc, xc = [0.5 * l for l in ext.shape]
-            coords = ext.wcs([xc, xc, xc+1], [yc, yc+1, yc], with_units=True)
+            coords = ext.wcs.pixel_to_world([xc, xc, xc+1], [yc, yc+1, yc])
             if isinstance(coords, SkyCoord):  # pure image
                 return np.median([i.separation(j).arcsec
                                   for i, j in combinations(coords, 2)])

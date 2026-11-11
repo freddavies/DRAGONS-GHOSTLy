@@ -50,6 +50,18 @@ To activate the interactive mode for a specific primitive, eg. ``traceApertures`
      redux.files = [files_to_reduce]
      redux.uparms = dict([('traceApertures:interactive', True)])
 
+.. _jupyter:
+
+Jupyter notebooks
+=================
+If you are using Jupyter notebooks, add these two lines at the top of your
+notebook to enable the interactive tools::
+
+    import nest_asyncio
+    nest_asyncio.apply()
+
+We do not formally support Jupyter notebooks but adding those two lines appears
+to work.
 
 .. _ui_layout:
 
@@ -108,7 +120,7 @@ Interactive primitives
 There are six primitives with an interactive mode for GMOS longslit.
 
 * :ref:`calculateSensitivity <ui_calculatesensitivity>`
-* :ref:`determineWavelengthSolution <ui_determinesavelengthsolution>`
+* :ref:`determineWavelengthSolution <ui_determinewavelengthsolution>`
 * :ref:`findApertures <ui_findapertures>`
 * :ref:`normalizeFlat <ui_normalizeflat>`
 * :ref:`skyCorrectFromSlit <ui_skycorrectfromslit>`
