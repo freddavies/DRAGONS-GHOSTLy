@@ -423,7 +423,7 @@ class Extractor(object):
             self.badpixmask |= ((lacos[1] & ~(self.badpixmask &
                                               DQ.bad_pixel).astype(bool)) * DQ.cosmic_ray)
             
-        
+        #embed()
         
         # Get a copy of the flat
         flat_data = np.copy(flat.data[0]).astype(np.float64)
